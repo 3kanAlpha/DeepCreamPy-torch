@@ -34,6 +34,6 @@ uv run --locked python decensor.py --is_mosaic=true
 
 The first command opens the GUI. The second runs the CLI in bar mode. The third runs the CLI in mosaic mode. Use `uv run --locked python decensor.py --help` to see the available CLI options.
 
-## Legacy Windows binaries
+## Windows distribution
 
-The separate [binary installation guide](INSTALLATION_BINARY.md) applies to previously published Windows x64 releases.
+See the [Windows distribution guide](INSTALLATION_BINARY.md) to run the bundled GUI or build a distribution ZIP from source.

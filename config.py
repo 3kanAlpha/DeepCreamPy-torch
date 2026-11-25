@@ -1,4 +1,6 @@
 import argparse
+import sys
+from pathlib import Path
 
 def str2floatarr(v):
     if type(v) == str:
@@ -19,11 +21,12 @@ def str2bool(v):
 
 def get_args():
 	parser = argparse.ArgumentParser(description='')
+	data_directory = Path(sys.executable).resolve().parent if getattr(sys, 'frozen', False) else Path('.')
 
 	#Input output folders settings
-	parser.add_argument('--decensor_input_path', default='./decensor_input/', help='input images with censored regions colored green to be decensored by decensor.py path')
-	parser.add_argument('--decensor_input_original_path', default='./decensor_input_original/', help='input images with no modifications to be decensored by decensor.py path')
-	parser.add_argument('--decensor_output_path', default='./decensor_output/', help='output images generated from running decensor.py path')
+	parser.add_argument('--decensor_input_path', default=str(data_directory / 'decensor_input'), help='directory of PNG images with green masks')
+	parser.add_argument('--decensor_input_original_path', default=str(data_directory / 'decensor_input_original'), help='directory of original images for mosaic mode')
+	parser.add_argument('--decensor_output_path', default=str(data_directory / 'decensor_output'), help='directory for the generated images')
 	parser.add_argument('--clean-up-input-dirs', dest='clean_up_input_dirs', action='store_true', default=False, help='whether to delete all image files in the input directories when decensoring is done')
 
 	#Decensor settings

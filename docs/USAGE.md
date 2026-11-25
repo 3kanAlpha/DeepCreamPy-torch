@@ -17,7 +17,7 @@ Save these images in the PNG format to the "decensor_input" folder. **They MUST 
 
 ### A. Using the binary
 
-Decensor the images by double-clicking on the decensor file.
+Open `DeepCreamPy.exe`, select **Bar censor**, and click **Decensor Your Images**.
 
 ### B. Running from source
 
@@ -39,7 +39,7 @@ For example, if the original image is called "mermaid.jpg," then you want to put
 
 ### A. Using the binary
 
-Decensor the images by double-clicking on the decensor_mosaic file.
+Open `DeepCreamPy.exe`, select **Mosaic censor**, and click **Decensor Your Images**.
 
 ### B. Running from source
 
