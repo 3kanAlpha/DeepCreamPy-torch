@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import numpy as np
 import torch
 from torch import nn
 from torch.nn import functional as F
@@ -91,8 +92,24 @@ class InpaintNN:
             self.model.load_state_dict(state)
             self.fallback_reason = f"CUDA initialization failed: {error}"
 
+        self.batch_size = 4 if self.device.type == "cuda" else 1
+
     @torch.inference_mode()
     def predict(self, image, original, mask):
+        try:
+            return self._predict(image, original, mask)
+        except torch.cuda.OutOfMemoryError:
+            if self.device.type != "cuda" or len(image) <= 1:
+                raise
+            self.batch_size = 1
+
+        # Retry after leaving the exception handler so the failed batch can be freed.
+        return np.concatenate([
+            self._predict(image[i:i + 1], original[i:i + 1], mask[i:i + 1])
+            for i in range(len(image))
+        ])
+
+    def _predict(self, image, original, mask):
         inputs = [
             torch.as_tensor(array, dtype=torch.float32, device=self.device).permute(0, 3, 1, 2)
             for array in (image, original, mask)

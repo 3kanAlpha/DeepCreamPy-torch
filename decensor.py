@@ -7,7 +7,7 @@ from PySide6 import QtCore
 
 import config
 import file
-from libs.utils import expand_bounding, find_regions, image_to_array
+from libs.utils import connected_regions, expand_bounding, image_to_array, mask_pixels
 from model import InpaintNN
 
 """
@@ -68,13 +68,6 @@ class Decensor(QtCore.QThread):
 
     def set_clean_up_input_dirs(self, value):
         self.clean_up_input_dirs = value
-
-    def find_mask(self, colored):
-        # self.signals.update_progress_LABEL.emit("find_mask()", "finding mask...")
-        mask = np.ones(colored.shape, np.uint8)
-        i, j = np.where(np.all(colored[0] == self.mask_color, axis=-1))
-        mask[0, i, j] = 0
-        return mask
 
     def load_model(self):
         if self.model is not None and self.loaded_mode == self.is_mosaic:
@@ -182,12 +175,10 @@ class Decensor(QtCore.QThread):
         else:
             return image.transpose(Image.FLIP_LEFT_RIGHT).transpose(Image.FLIP_TOP_BOTTOM)
 
-    #decensors one image at a time
-    #TODO: decensor all cropped parts of the same image in a batch (then i need input for colored an array of those images and make additional changes)
     def decensor_image_variation(self, ori, colored, variant_number, file_name):
+        same_image = ori is colored
         ori = self.apply_variant(ori, variant_number)
-        colored = self.apply_variant(colored, variant_number)
-        width, height = ori.size
+        colored = ori if same_image else self.apply_variant(colored, variant_number)
         #save the alpha channel if the image has an alpha channel
         has_alpha = False
         if (ori.mode == "RGBA"):
@@ -196,26 +187,9 @@ class Decensor(QtCore.QThread):
             alpha_channel = np.expand_dims(alpha_channel, axis =-1)
             ori = ori.convert('RGB')
 
-        ori_array = image_to_array(ori)
-        ori_array = np.expand_dims(ori_array, axis = 0)
-
-        if self.is_mosaic:
-            #if mosaic decensor, mask is empty
-            # mask = np.ones(ori_array.shape, np.uint8)
-            # print(mask.shape)
-            colored = colored.convert('RGB')
-            color_array = image_to_array(colored)
-            color_array = np.expand_dims(color_array, axis = 0)
-            mask = self.find_mask(color_array)
-            mask_reshaped = mask[0,:,:,:] * 255.0
-            mask_img = Image.fromarray(mask_reshaped.astype('uint8'))
-            # mask_img.show()
-
-        else:
-            mask = self.find_mask(ori_array)
-
-        #colored image is only used for finding the regions
-        regions = find_regions(colored.convert('RGB'), [v*255 for v in self.mask_color])
+        mask_color = [value * 255 for value in self.mask_color]
+        marked = mask_pixels(colored.convert('RGB'), mask_color)
+        regions = connected_regions(marked)
         print("Found {region_count} censored regions in this image!".format(region_count = len(regions)))
         self.signals.insertText_progressCursor.emit("Found {region_count} censored regions in this image!".format(region_count = len(regions)))
 
@@ -231,93 +205,51 @@ class Decensor(QtCore.QThread):
         self.signals.update_ProgressBar_MAX_VALUE.emit(len(regions))
         self.signals.update_ProgressBar_SET_VALUE.emit(0)
 
-        output_img_array = ori_array[0].copy()
+        if not self.is_mosaic and not same_image:
+            marked = mask_pixels(ori.convert('RGB'), mask_color)
+        mask_img = Image.fromarray(np.where(marked, np.uint8(0), np.uint8(255)))
+        output_img_array = image_to_array(ori)
+        completed = 0
+        while completed < len(regions):
+            batch = regions[completed:completed + self.model.batch_size]
+            boxes = []
+            crops = []
+            masks = []
+            for region_counter, region in enumerate(batch, completed + 1):
+                self.signals.insertText_progressCursor.emit(
+                    f"Decensoring regions in image, Decensoring censor {region_counter}/{len(regions)}"
+                )
+                box = expand_bounding(ori, region, expand_factor=1.5)
+                boxes.append(box)
+                # Match the original input sampling and keep the mask binary.
+                crop = ori.crop(box).resize((256, 256), resample=Image.Resampling.NEAREST)
+                crop_array = image_to_array(crop)
+                crop_mask = mask_img.crop(box).resize((256, 256), resample=Image.Resampling.NEAREST)
+                known = np.asarray(crop_mask) != 0
+                if not self.is_mosaic:
+                    crop_array[~known] = 0
+                crops.append(crop_array)
+                masks.append(np.repeat(known[..., None], 3, axis=-1))
 
-        for region_counter, region in enumerate(regions, 1):
-            # self.signals.update_progress_LABEL.emit("\"Decensoring regions in image\"","Decensoring censor {}/{}".format(region_counter,len(regions)))
-            self.signals.insertText_progressCursor.emit("Decensoring regions in image, Decensoring censor {}/{}".format(region_counter,len(regions)))
-            bounding_box = expand_bounding(ori, region, expand_factor=1.5)
-            crop_img = ori.crop(bounding_box)
-            # crop_img.show()
-            #convert mask back to image
-            mask_reshaped = mask[0,:,:,:] * 255.0
-            mask_img = Image.fromarray(mask_reshaped.astype('uint8'))
-            # Match the original input sampling and keep the mask binary.
-            crop_img = crop_img.resize((256, 256), resample=Image.Resampling.NEAREST)
-            crop_img_array = image_to_array(crop_img)
-            #resize the mask images
-            mask_img = mask_img.crop(bounding_box)
-            mask_img = mask_img.resize((256, 256), resample=Image.Resampling.NEAREST)
-            # mask_img.show()
-            #convert mask_img back to array
-            mask_array = image_to_array(mask_img)
+            images = np.stack(crops) * 2.0 - 1
+            predictions = self.model.predict(images, images, np.stack(masks))
+            for region, box, prediction in zip(batch, boxes, predictions, strict=True):
+                left, top, right, bottom = box
+                prediction = (255.0 * ((prediction + 1.0) / 2.0)).astype(np.uint8)
+                pred_img = Image.fromarray(prediction).resize(
+                    (right - left, bottom - top), resample=Image.Resampling.BICUBIC
+                )
+                pred_array = image_to_array(pred_img)
+                x, y = np.asarray(list(region)).T
+                inside = (left <= x) & (x < right) & (top <= y) & (y < bottom)
+                x, y = x[inside], y[inside]
+                output_img_array[y, x] = pred_array[y - top, x - left]
 
-            # mask_array[mask_array > 0] = 1
-            # crop_img_array[..., :-1][mask_array==0] = (0,0,0)
-
-            if not self.is_mosaic:
-                a, b = np.where(np.all(mask_array == 0, axis = -1))
-                # print(a,b)
-                # print(crop_img_array[a,b])
-                # print(crop_img_array[a,b,0])
-                # print(crop_img_array.shape)
-                # print(type(crop_img_array[0,0]))
-                crop_img_array[a,b,:] = 0.
-            # temp = Image.fromarray((crop_img_array * 255.0).astype('uint8'))
-            # temp.show()
-
-            crop_img_array = np.expand_dims(crop_img_array, axis = 0)
-            mask_array = np.expand_dims(mask_array, axis = 0)
-
-            # print(np.amax(crop_img_array))
-            # print(np.amax(mask_array))
-            # print(np.amax(masked))
-
-            # print(np.amin(crop_img_array))
-            # print(np.amin(mask_array))
-            # print(np.amin(masked))
-
-            # print(mask_array)
-
-            crop_img_array = crop_img_array * 2.0 - 1
-            # mask_array = mask_array / 255.0
-
-            # Run predictions for this batch of images
-            pred_img_array = self.model.predict(crop_img_array, crop_img_array, mask_array)
-
-            pred_img_array = np.squeeze(pred_img_array, axis = 0)
-            pred_img_array = (255.0 * ((pred_img_array + 1.0) / 2.0)).astype(np.uint8)
-
-            #scale prediction image back to original size
-            bounding_width = bounding_box[2]-bounding_box[0]
-            bounding_height = bounding_box[3]-bounding_box[1]
-            #convert np array to image
-
-            # print(bounding_width,bounding_height)
-            # print(pred_img_array.shape)
-
-            pred_img = Image.fromarray(pred_img_array.astype('uint8'))
-            # pred_img.show()
-            pred_img = pred_img.resize((bounding_width, bounding_height), resample = Image.BICUBIC)
-            # pred_img.show()
-
-            pred_img_array = image_to_array(pred_img)
-
-            # print(pred_img_array.shape)
-            pred_img_array = np.expand_dims(pred_img_array, axis = 0)
-
-            # copy the decensored regions into the output image
-            for i in range(len(ori_array)):
-                for col in range(bounding_width):
-                    for row in range(bounding_height):
-                        bounding_width_index = col + bounding_box[0]
-                        bounding_height_index = row + bounding_box[1]
-                        if (bounding_width_index, bounding_height_index) in region:
-                            output_img_array[bounding_height_index][bounding_width_index] = pred_img_array[i,:,:,:][row][col]
-            # self.signals.signal_ProgressBar_update_VALUE.emit("{} out of {} regions decensored.".format(region_counter, len(regions)), region_counter)
-            self.signals.update_ProgressBar_SET_VALUE.emit(region_counter)
-            self.signals.insertText_progressCursor.emit("{} out of {} regions decensored.\n".format(region_counter, len(regions)))
-            print("{region_counter} out of {region_count} regions decensored.".format(region_counter=region_counter, region_count=len(regions)))
+                completed += 1
+                self.signals.update_ProgressBar_SET_VALUE.emit(completed)
+                message = f"{completed} out of {len(regions)} regions decensored."
+                self.signals.insertText_progressCursor.emit(message + "\n")
+                print(message)
 
         output_img_array = output_img_array * 255.0
 

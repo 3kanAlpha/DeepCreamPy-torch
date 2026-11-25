@@ -6,38 +6,36 @@ def image_to_array(image):
     array = np.asarray(image)
     return np.array(array / 255.0)
 
-#find strongly connected components with the mask color
+def mask_pixels(image, mask_color):
+    red, green, blue = np.asarray(image).transpose(2, 0, 1)
+    return (red == mask_color[0]) & (green == mask_color[1]) & (blue == mask_color[2])
+
+
 def find_regions(image, mask_color):
-    pixel = image.load()
-    neighbors = dict()
-    width, height = image.size
-    for x in range(width):
-        for y in range(height):
-            if is_right_color(pixel[x,y], *mask_color):
-                neighbors[x, y] = {(x,y)}
-    for x, y in neighbors:
-        candidates = (x + 1, y), (x, y + 1)
-        for candidate in candidates:
-            if candidate in neighbors:
-                neighbors[x, y].add(candidate)
-                neighbors[candidate].add((x, y))
-    closed_list = set()
+    return connected_regions(mask_pixels(image, mask_color))
 
-    def connected_component(pixel):
-        region = set()
-        open_list = {pixel}
-        while open_list:
-            pixel = open_list.pop()
-            closed_list.add(pixel)
-            open_list |= neighbors[pixel] - closed_list
-            region.add(pixel)
-        return region
 
+def connected_regions(mask):
+    # Scan columns first to retain the ordering of regions of the same size.
+    columns, rows = np.nonzero(mask.T)
+    pixels = list(zip(columns.tolist(), rows.tolist(), strict=True))
+    pending = set(pixels)
     regions = []
-    for pixel in neighbors:
-        if pixel not in closed_list:
-            regions.append(connected_component(pixel))
-    regions.sort(key = len, reverse = True)
+    for pixel in pixels:
+        if pixel not in pending:
+            continue
+        pending.remove(pixel)
+        region = {pixel}
+        frontier = [pixel]
+        while frontier:
+            x, y = frontier.pop()
+            for adjacent in ((x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)):
+                if adjacent in pending:
+                    pending.remove(adjacent)
+                    region.add(adjacent)
+                    frontier.append(adjacent)
+        regions.append(region)
+    regions.sort(key=len, reverse=True)
     return regions
 
 # risk of box being bigger than the image
@@ -121,10 +119,6 @@ def expand_bounding(img, region, expand_factor=1.5, min_size = 256):
         print(x1_square, y1_square, x2_square, y2_square)
         x1_square, y1_square, x2_square, y2_square = min_x, min_y, max_x, max_y
     return x1_square, y1_square, x2_square, y2_square
-
-def is_right_color(pixel, r2, g2, b2):
-    r1, g1, b1 = pixel
-    return r1 == r2 and g1 == g2 and b1 == b2
 
 if __name__ == '__main__':
     image = Image.open('')
