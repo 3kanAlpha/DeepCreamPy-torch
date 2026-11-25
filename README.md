@@ -13,6 +13,8 @@
 uvのインストール後、以下を実行します。
 
 ```sh
+git clone https://github.com/3kanAlpha/DeepCreamPy-torch.git
+cd DeepCreamPy-torch
 uv sync --locked
 ```
 
