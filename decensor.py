@@ -242,16 +242,15 @@ class Decensor(QtCore.QThread):
             #convert mask back to image
             mask_reshaped = mask[0,:,:,:] * 255.0
             mask_img = Image.fromarray(mask_reshaped.astype('uint8'))
-            #resize the cropped images
-            crop_img = crop_img.resize((256, 256))
+            # Match the original input sampling and keep the mask binary.
+            crop_img = crop_img.resize((256, 256), resample=Image.Resampling.NEAREST)
             crop_img_array = image_to_array(crop_img)
             #resize the mask images
             mask_img = mask_img.crop(bounding_box)
-            mask_img = mask_img.resize((256, 256))
+            mask_img = mask_img.resize((256, 256), resample=Image.Resampling.NEAREST)
             # mask_img.show()
             #convert mask_img back to array
             mask_array = image_to_array(mask_img)
-            #the mask has been upscaled so there will be values not equal to 0 or 1
 
             # mask_array[mask_array > 0] = 1
             # crop_img_array[..., :-1][mask_array==0] = (0,0,0)
