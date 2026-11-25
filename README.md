@@ -10,9 +10,9 @@ A deep learning-based tool to automatically replace parts of artworks with plaus
 
 Before using DeepCreamPy, the user must mark regions in the artwork using green color with an image editing program (e.g., GIMP, Photoshop). DeepCreamPy takes the images with green colored regions as input, and a neural network automatically fills in the highlighted regions.
 
-You can download the latest release for Windows 64-bit [here](https://github.com/Deepshift/DeepCreamPy/releases/latest).
+Legacy Windows 64-bit binaries are available in the [release archive](https://github.com/Deepshift/DeepCreamPy/releases).
 
-For users interested in compiling DeepCreamPy themselves, DeepCreamPy can run on Windows, Mac, and Linux.
+The current source setup targets Windows x64 with Python 3.13. See the [uv installation and model conversion instructions](docs/INSTALLATION.md).
 
 Before opening a new issue, please check [closed issues](https://github.com/Deepshift/DeepCreamPy/issues?q=is%3Aissue+is%3Aclosed) and refer to the [table of contents](https://github.com/Deepshift/DeepCreamPy#table-of-contents).
 
@@ -37,8 +37,8 @@ It does NOT work with:
 
 ## Table of Contents
 Setup:
-* [Running latest Window 64-bit release](docs/INSTALLATION_BINARY.md)
-* [Running code yourself](docs/INSTALLATION.md)
+* [Running from source with uv](docs/INSTALLATION.md)
+* [Running a legacy Windows 64-bit release](docs/INSTALLATION_BINARY.md)
 
 Usage:
 * [Tutorial](docs/USAGE.md)
@@ -49,7 +49,6 @@ Miscellaneous:
 * [FAQ](docs/FAQ.md)
 
 ## To do
-- Moving to PyTorch or newer versions of TensorFlow
 - Improving UI
 - Error logging
 

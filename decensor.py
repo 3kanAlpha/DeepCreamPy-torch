@@ -1,32 +1,14 @@
+import os
+import sys
 
-try:
-    # default library
-    import os, logging, sys, config
-except ImportError as e:
-    print("Error when importing DEFAULT library : ", e)
-    print("\nIf you made script named [\"os.py\", \"logging.py\", \"sys.py\", \"config.py\"] rename it")
-    print("If not, re-install python or check your Python environment variables")
-try:
-    # local library
-    import file
-    from model import InpaintNN
-    from libs.utils import *
-    # external library
-    import numpy as np
-    from PIL import Image
-    import tensorflow as tf
-    from PySide2 import QtCore # for QThread
-except ImportError as e:
-    print("\n"+ '='*20 + " ImportError " + "=" * 20 + "\n")
-    if e.__class__.__name__ == "ModuleNotFoundError":
-        print(e)
-        print("Python libraries are missing. You can install all required libraries by running in the command line (terminal)")
-        print("cpu version : pip install -r requirements-cpu.txt")
-        print("gpu version : pip install -r requirements-gpu.txt")
-    else:
-        print("Error when importing libraries: ", e)
-    print("\nIf pip doesn't work, try update through Anaconda")
-    print("install Anaconda : https://www.anaconda.com/distribution/ \n")
+import numpy as np
+from PIL import Image
+from PySide6 import QtCore
+
+import config
+import file
+from libs.utils import expand_bounding, find_regions, image_to_array
+from model import InpaintNN
 
 """
 to allow decensoring in CLI, ignore all methods targeting Qt signals,
@@ -54,7 +36,8 @@ class Decensor(QtCore.QThread):
         self.signals = IgnoreAll() # Signals class will be given by progressWindow
 
         self.model = None
-        self.warm_up = False
+        self.loaded_mode = None
+        self.load_only = False
 
         # if ui_mode is not None:
         #     self.ui_mode = ui_mode
@@ -70,18 +53,18 @@ class Decensor(QtCore.QThread):
             os.makedirs(self.decensor_output_path)
 
     def run(self):
-        if not self.warm_up :
-            print("if self.warm_up :")
-            self.load_model()
-            return
-        elif self.warm_up:
-            print("elif not self.warm_up:")
-            self.decensor_all_images_in_folder()
-            self.do_post_jobs()
-
-    def stop(self):
-        # in case of stopping decensor, terminate not to run if self while MainWindow is closed
-        self.terminate()
+        try:
+            if self.load_only:
+                self.load_model()
+            else:
+                self.decensor_all_images_in_folder()
+                self.do_post_jobs()
+        except Exception as error:
+            message = f"Processing stopped: {error}"
+            print(message, file=sys.stderr)
+            self.signals.insertText_progressCursor.emit(message)
+        finally:
+            self.load_only = False
 
     def set_clean_up_input_dirs(self, value):
         self.clean_up_input_dirs = value
@@ -94,27 +77,23 @@ class Decensor(QtCore.QThread):
         return mask
 
     def load_model(self):
+        if self.model is not None and self.loaded_mode == self.is_mosaic:
+            return
+
         self.signals.insertText_progressCursor.emit("Loading model ... please wait ...\n")
-        if self.model is None :
-            self.model = InpaintNN(bar_model_name = "./models/bar/Train_775000.meta",
-                                   bar_checkpoint_name = "./models/bar/",
-                                   mosaic_model_name = "./models/mosaic/Train_290000.meta",
-                                   mosaic_checkpoint_name = "./models/mosaic/",
-                                   is_mosaic=self.is_mosaic)
-        self.warm_up = True
-        print("load model finished")
-        self.signals.insertText_progressCursor.emit("Loading model finished!\n")
-        self.signals.update_decensorButton_Text.emit("Decensor Your Images")
-        self.signals.update_decensorButton_Enabled.emit(True)
+        self.model = InpaintNN(is_mosaic=self.is_mosaic)
+        self.loaded_mode = self.is_mosaic
+        message = f"Loaded {'mosaic' if self.is_mosaic else 'bar'} model on {self.model.device}"
+        if self.model.fallback_reason:
+            message += f" ({self.model.fallback_reason})"
+        print(message, flush=True)
+        self.signals.insertText_progressCursor.emit(message)
+        self.signals.update_statusLabel_Text.emit(message)
 
     def decensor_all_images_in_folder(self):
-        #load model once at beginning and reuse same model
-        if not self.warm_up :
-            # incase of running by source code
-            self.load_model()
+        self.load_model()
 
         input_color_dir = self.decensor_input_path
-        file_names = os.listdir(input_color_dir)
 
         input_dir = self.decensor_input_path
         output_dir = self.decensor_output_path
@@ -151,13 +130,7 @@ class Decensor(QtCore.QThread):
             if os.path.isfile(color_file_path) and color_ext.casefold() == ".png":
                 print("--------------------------------------------------------------------------")
                 print("Decensoring the image {}\n".format(color_file_path))
-                try :
-                    colored_img = Image.open(color_file_path)
-                except:
-                    print("Cannot identify image file (" +str(color_file_path)+")")
-                    self.files_removed.append((color_file_path,3))
-                    # incase of abnormal file format change (ex : text.txt -> text.png)
-                    continue
+                colored_img = Image.open(color_file_path)
 
                 #if we are doing a mosaic decensor
                 if self.is_mosaic:
@@ -192,11 +165,7 @@ class Decensor(QtCore.QThread):
             file.error_messages(None, self.files_removed)
         print("\nDecensoring complete!")
 
-        #unload model to prevent memory issues
-        # self.signals.update_progress_LABEL.emit("finished", "Decensoring complete! Close this window and reopen DCP to start a new session.")
-        self.signals.insertText_progressCursor.emit("\nDecensoring complete! remove decensored file before decensoring again not to overwrite")
-        self.signals.update_decensorButton_Enabled.emit(True)
-        tf.reset_default_graph()
+        self.signals.insertText_progressCursor.emit("\nDecensoring complete!")
 
     def decensor_image_variations(self, ori, colored, file_name=None):
         for i in range(self.variations):
@@ -409,6 +378,8 @@ class Decensor(QtCore.QThread):
 
 
 if __name__ == '__main__':
-    decensor = Decensor()
-    decensor.decensor_all_images_in_folder()
-    # equivalent to decensor.start() (running as QtThread)
+    try:
+        Decensor().decensor_all_images_in_folder()
+    except Exception as error:
+        print(f"Processing stopped: {error}", file=sys.stderr)
+        sys.exit(1)

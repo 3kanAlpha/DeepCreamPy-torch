@@ -4,7 +4,7 @@ Neural network code is modified from Forty-lock's project [PEPSI](https://github
 
 User interface code uses the Qt for Python library under the LGPLv3 license.
 I made no modifications to the Qt for Python source code.
-To meet LGPLv3 license obligations, I have provided a link to obtaining the [Qt for Python source code](https://wiki.qt.io/Building_Qt_5_from_Git#Getting_the_source_code). I also permit recombining or relinking DeepCreamPy with modified versions of the Qt for Python library by modifying DeepCreamPy's source code.
+To meet LGPLv3 license obligations, I have provided a link to obtaining the [Qt for Python source code](https://code.qt.io/cgit/pyside/pyside-setup.git/). I also permit recombining or relinking DeepCreamPy with modified versions of the Qt for Python library by modifying DeepCreamPy's source code.
 
 MIT License text for Min-Cheol Sagong:
 ```
@@ -30,7 +30,7 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
-LGPLv3 License text for PySide2:
+LGPLv3 License text for Qt for Python:
 ```
 GNU LESSER GENERAL PUBLIC LICENSE
 

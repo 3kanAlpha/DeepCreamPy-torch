@@ -4,12 +4,15 @@
 # Please read this tutorial on how to prepare your images for use with DeepCreamPy.
 # The greater the number of variations, the longer decensoring process will be.
 
-import sys, time
-from PySide2.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QGridLayout, QGroupBox, QDesktopWidget, QApplication, QCheckBox
-from PySide2.QtWidgets import QAction, qApp, QApplication, QMessageBox, QRadioButton, QPushButton, QTextEdit, QLabel
-from PySide2.QtWidgets import QSizePolicy,QMainWindow, QStatusBar, QProgressBar
-from PySide2.QtCore import Qt, QObject
-from PySide2.QtGui import QFont, QTextCursor
+import sys
+
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QFont, QTextCursor
+from PySide6.QtWidgets import (
+	QApplication, QCheckBox, QGridLayout, QGroupBox, QLabel, QProgressBar,
+	QPushButton, QRadioButton, QSizePolicy, QStatusBar, QTextEdit, QVBoxLayout, QWidget,
+)
+
 from decensor import Decensor
 from signals import Signals
 
@@ -24,7 +27,9 @@ class MainWindow(QWidget):
 		self.signals = Signals()
 		self.initUI()
 		self.decensor = Decensor(self)
+		self.decensor.signals = self.signals
 		self.setSignals()
+		self.decensor.finished.connect(self.processing_finished)
 		self.load_model()
 
 	def initUI(self):
@@ -36,7 +41,7 @@ class MainWindow(QWidget):
 		#Tutorial
 		self.tutorialLabel = QLabel()
 		self.tutorialLabel.setText("Welcome to DeepCreamPy!\n\nIf you're new to DCP, please read the README.\nThis program does nothing without the proper setup of your images.\n\nReport any bugs you encounter to me on Github or Twitter @deeppomf.")
-		self.tutorialLabel.setAlignment(Qt.AlignCenter)
+		self.tutorialLabel.setAlignment(Qt.AlignmentFlag.AlignCenter)
 		self.tutorialLabel.setFont(QFont('Sans Serif', 13))
 
 		#Censor type group
@@ -71,8 +76,8 @@ class MainWindow(QWidget):
 		self.decensorButton = QPushButton('Decensor Your Images')
 		self.decensorButton.clicked.connect(self.decensorClicked)
 		self.decensorButton.setSizePolicy(
-    		QSizePolicy.Preferred,
-    		QSizePolicy.Preferred)
+			QSizePolicy.Policy.Preferred,
+			QSizePolicy.Policy.Preferred)
 
 		#Progress message
 		# self.progressGroupBox = QGroupBox('Progress')
@@ -115,16 +120,16 @@ class MainWindow(QWidget):
 		self.show()
 
 	def load_model(self):
-		# load model to make able to decensor several times
 		self.decensorButton.setEnabled(False)
 		self.decensorButton.setText("Loading Machine Learning Model (Please Wait...)")
+		self.decensor.load_only = True
 		self.decensor.start()
-		self.decensor.signals = self.signals
-		self.progressCursor.insertText("Loading Decensor app consumes 6 GB memory at maximum")
+
+	def processing_finished(self):
+		self.decensorButton.setText("Decensor Your Images")
+		self.decensorButton.setEnabled(True)
 
 	def setSignals(self):
-		self.signals.update_decensorButton_Text.connect(self.decensorButton.setText)
-		self.signals.update_decensorButton_Enabled.connect(self.decensorButton.setEnabled)
 		self.signals.update_statusLabel_Text.connect(self.statusLabel.setText)
 		self.signals.update_ProgressBar_SET_VALUE.connect(self.progressBar.setValue)
 		self.signals.update_ProgressBar_MAX_VALUE.connect(self.progressBar.setMaximum)
@@ -177,17 +182,15 @@ class MainWindow(QWidget):
 	# #centers the main window
 	def center(self):
 		qr = self.frameGeometry()
-		cp = QDesktopWidget().availableGeometry().center()
+		cp = self.screen().availableGeometry().center()
 		qr.moveCenter(cp)
 		self.move(qr.topLeft())
 
+	def closeEvent(self, event):
+		self.decensor.wait()
+		super().closeEvent(event)
+
 if __name__ == '__main__':
-	import os
-    # you could remove this if statement if there's no error without this
-	if os.name == 'nt':
-		import PySide2
-		pyqt = os.path.dirname(PySide2.__file__)
-		QApplication.addLibraryPath(os.path.join(pyqt, "plugins"))
 	app = QApplication(sys.argv)
 	ex = MainWindow()
-	sys.exit(app.exec_())
+	sys.exit(app.exec())

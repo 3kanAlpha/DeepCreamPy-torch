@@ -1,15 +1,19 @@
 # Troubleshooting Install
 
-## Running Binary
+## Running from source
 
-Remember the binary is only for 64-bit Windows systems.
+### The model file is missing
 
-## Running Code
+Place the original TensorFlow checkpoints in `models/bar/` and `models/mosaic/`, then follow the [model conversion instructions](INSTALLATION.md#prepare-the-models).
 
-### I'm running a Linux OS, and I get the error message "Using TensorFlow backend. Illegal instruction" when running decensor.py
+### DeepCreamPy starts on the CPU
 
-Unfortunately, you can't run DCP on your machine because your CPU doesn't support AVX instructions. Newer versions of tensorflow can't run on these CPUs. This problem doesn't exist for Windows with non-AVX CPUs because there are custom Windows Tensorflow wheels, you can find it [here](https://github.com/fo40225/tensorflow-windows-wheel/tree/master/1.10.0/py36/CPU/sse2).
+The application displays the device and reason when CUDA is unavailable or fails to initialize. To use the GPU, check that Windows detects the NVIDIA GPU and that the installed driver supports the CUDA 13.2 build in the [installation instructions](INSTALLATION.md).
 
-Upgrading your CPU to a newer CPU will probably fix this issue.
+### A processing job stops with an error
 
-See issue #74 for a discussion.
+Check the message in the progress pane or terminal. Fix the reported issue and start a new job.
+
+## Running a legacy binary
+
+Use the [legacy binary installation guide](INSTALLATION_BINARY.md) for previously published Windows x64 releases.

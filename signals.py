@@ -1,18 +1,10 @@
-from PySide2 import QtCore
+from PySide6 import QtCore
 
 # Signals used for sharing status between threads(IPC, InterProcess Connection)
 class Signals(QtCore.QObject):
 
     # usage example in other class(thread) :
     # → self.signals.<method_name>.emit(<parameters - type strict>)
-
-    # str : String to update label
-    # direct connect to decensorButton.setText(str)
-    update_decensorButton_Text = QtCore.Signal(str)
-
-    # bool : set QPushButton Enabled (True or False)
-    # direct connect to decensorButton.setEnabled(bool)
-    update_decensorButton_Enabled = QtCore.Signal(bool)
 
     # direct connect to progressMessage.clear(None)
     clear_progressMessage = QtCore.Signal()

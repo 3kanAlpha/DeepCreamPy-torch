@@ -1,112 +1,100 @@
-import tensorflow as tf
-import os
-import numpy as np
-import module as mm
+from pathlib import Path
 
-#suppress tensorflow deprecation warnings
-tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)
+import torch
+from torch import nn
+from torch.nn import functional as F
+
+
+MODELS_DIR = Path(__file__).resolve().parent / "models"
+WEIGHTS_NAME = "inpaint.pt"
+
+
+class InpaintModel(nn.Module):
+    def __init__(self):
+        super().__init__()
+        channels = (6, 32, 64, 64, 128, 128, 256, 256, 256, 256, 256)
+        strides = (1, 2, 1, 2, 1, 2, 1, 1, 1, 1)
+        dilations = (1, 1, 1, 1, 1, 1, 2, 4, 8, 16)
+        self.encoder = nn.ModuleList(
+            nn.Conv2d(channels[i], channels[i + 1], 5 if i == 0 else 3,
+                      stride=stride, dilation=dilation)
+            for i, (stride, dilation) in enumerate(zip(strides, dilations, strict=True))
+        )
+        self.context_merge = nn.Conv2d(512, 256, 1)
+        channels = (256, 128, 128, 64, 64, 32, 32, 16, 16, 3)
+        self.decoder = nn.ModuleList(
+            nn.Conv2d(in_channels, out_channels, 3, padding=1 if out_channels == 3 else 0)
+            for in_channels, out_channels in zip(channels, channels[1:])
+        )
+
+    def contextual_block(self, features, mask):
+        size = features.shape[-2:]
+        patch_size = 3
+        padding = patch_size // 2
+        mask = F.interpolate(mask[:, :1], size=size, mode="nearest")
+        background = features * mask
+        keys = F.unfold(background, kernel_size=patch_size).transpose(1, 2)
+        queries = F.unfold(features, kernel_size=patch_size, padding=padding)
+
+        distances = (keys.square().sum(dim=2, keepdim=True)
+                     + queries.square().sum(dim=1, keepdim=True)
+                     - 2 * torch.bmm(keys, queries))
+        centered = distances - distances.mean(dim=1, keepdim=True)
+        deviation = centered.square().mean(dim=1, keepdim=True).sqrt()
+        attention = torch.softmax(-50 * torch.tanh(centered / deviation), dim=1)
+
+        patches = torch.bmm(keys.transpose(1, 2), attention)
+        copied = F.fold(patches, size, kernel_size=patch_size, padding=padding) / patch_size**2
+        filled = background + copied * (1 - mask)
+        return F.elu(self.context_merge(torch.cat((features, filled), dim=1)))
+
+    def forward(self, image, original, mask):
+        features = torch.cat((image, mask), dim=1)
+        for convolution in self.encoder:
+            border = (convolution.kernel_size[0] // 2) * convolution.dilation[0]
+            features = F.elu(convolution(F.pad(features, (border,) * 4, mode="reflect")))
+
+        features = self.contextual_block(features, mask)
+        for i, convolution in enumerate(self.decoder[:-1]):
+            features = F.elu(convolution(F.pad(features, (1, 1, 1, 1), mode="reflect")))
+            if i in (1, 3, 5):
+                features = F.interpolate(features, scale_factor=2, mode="nearest")
+
+        filled = self.decoder[-1](features).clamp(-1, 1)
+        return filled * (1 - mask) + original * mask
+
 
 class InpaintNN:
+    def __init__(self, is_mosaic=False):
+        mode = "mosaic" if is_mosaic else "bar"
+        path = MODELS_DIR / mode / WEIGHTS_NAME
+        if not path.is_file():
+            raise FileNotFoundError(f"Missing {path}. Run the model conversion in docs/INSTALLATION.md.")
 
-	def __init__(self, input_height=256, input_width=256, batch_size = 1, bar_model_name=None, bar_checkpoint_name=None, mosaic_model_name=None, mosaic_checkpoint_name = None, is_mosaic=False):
-		self.bar_model_name = bar_model_name
-		self.bar_checkpoint_name = bar_checkpoint_name
-		self.mosaic_model_name = mosaic_model_name
-		self.mosaic_checkpoint_name = mosaic_checkpoint_name
-		self.is_mosaic = is_mosaic
+        state = torch.load(path, map_location="cpu", weights_only=True)
+        self.model = InpaintModel().eval()
+        self.model.load_state_dict(state)
+        self.device = torch.device("cpu")
+        self.fallback_reason = "CUDA is unavailable"
 
-		self.input_height = input_height
-		self.input_width = input_width
-		self.batch_size = batch_size
+        try:
+            if torch.cuda.is_available():
+                # Match the float32 arithmetic used by the original model.
+                torch.backends.cuda.matmul.fp32_precision = "ieee"
+                torch.backends.cudnn.conv.fp32_precision = "ieee"
+                self.model.to("cuda")
+                torch.cuda.synchronize()
+                self.device = torch.device("cuda")
+                self.fallback_reason = None
+        except (RuntimeError, AssertionError) as error:
+            self.model = InpaintModel().eval()
+            self.model.load_state_dict(state)
+            self.fallback_reason = f"CUDA initialization failed: {error}"
 
-		self.check_model_file()
-		self.build_model()
-
-	def check_model_file(self):
-		if not os.path.exists(self.bar_model_name) or not os.path.exists(self.mosaic_model_name) :
-			print("\nMissing Train Model, download train model")
-			print("Read : https://github.com/deeppomf/DeepCreamPy/blob/master/docs/INSTALLATION.md#run-code-yourself \n")
-			exit(-1)
-
-	def build_model(self):
-		# ------- variables
-
-		self.X = tf.placeholder(tf.float32, [self.batch_size, self.input_height, self.input_width, 3])
-		self.Y = tf.placeholder(tf.float32, [self.batch_size, self.input_height, self.input_width, 3])
-
-		self.MASK = tf.placeholder(tf.float32, [self.batch_size, self.input_height, self.input_width, 3])
-		IT = tf.placeholder(tf.float32)
-
-		# ------- structure
-
-		input = tf.concat([self.X, self.MASK], 3)
-
-		vec_en = mm.encoder(input, reuse=False, name='G_en')
-
-		vec_con = mm.contextual_block(vec_en, vec_en, self.MASK, 3, 50.0, 'CB1', stride=1)
-
-		I_co = mm.decoder(vec_en, self.input_height, self.input_height, reuse=False, name='G_de')
-		I_ge = mm.decoder(vec_con, self.input_height, self.input_height, reuse=True, name='G_de')
-
-		self.image_result = I_ge * (1-self.MASK) + self.Y*self.MASK
-
-		D_real_red = mm.discriminator_red(self.Y, reuse=False, name='disc_red')
-		D_fake_red = mm.discriminator_red(self.image_result, reuse=True, name='disc_red')
-
-		# ------- Loss
-
-		Loss_D_red = tf.reduce_mean(tf.nn.relu(1+D_fake_red)) + tf.reduce_mean(tf.nn.relu(1-D_real_red))
-
-		Loss_D = Loss_D_red
-
-		Loss_gan_red = -tf.reduce_mean(D_fake_red)
-
-		Loss_gan = Loss_gan_red
-
-		Loss_s_re = tf.reduce_mean(tf.abs(I_ge - self.Y))
-		Loss_hat = tf.reduce_mean(tf.abs(I_co - self.Y))
-
-		A = tf.image.rgb_to_yuv((self.image_result+1)/2.0)
-		A_Y = tf.to_int32(A[:, :, :, 0:1]*255.0)
-
-		B = tf.image.rgb_to_yuv((self.Y+1)/2.0)
-		B_Y = tf.to_int32(B[:, :, :, 0:1]*255.0)
-
-		ssim = tf.reduce_mean(tf.image.ssim(A_Y, B_Y, 255.0))
-
-		alpha = IT/1000000
-
-		Loss_G = 0.1*Loss_gan + 10*Loss_s_re + 5*(1-alpha) * Loss_hat
-
-		# --------------------- variable & optimizer
-
-		var_D = [v for v in tf.global_variables() if v.name.startswith('disc_red')]
-		var_G = [v for v in tf.global_variables() if v.name.startswith('G_en') or v.name.startswith('G_de') or v.name.startswith('CB1')]
-
-		update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
-
-		with tf.control_dependencies(update_ops):
-		    optimize_D = tf.train.AdamOptimizer(learning_rate=0.0004, beta1=0.5, beta2=0.9).minimize(Loss_D, var_list=var_D)
-		    optimize_G = tf.train.AdamOptimizer(learning_rate=0.0001, beta1=0.5, beta2=0.9).minimize(Loss_G, var_list=var_G)
-
-		config = tf.ConfigProto()
-		# config.gpu_options.per_process_gpu_memory_fraction = 0.4
-		# config.gpu_options.allow_growth = False
-
-		self.sess = tf.Session(config=config)
-
-		init = tf.global_variables_initializer()
-		self.sess.run(init)
-		saver = tf.train.Saver()
-
-		if self.is_mosaic:
-			Restore = tf.train.import_meta_graph(self.mosaic_model_name)
-			Restore.restore(self.sess, tf.train.latest_checkpoint(self.mosaic_checkpoint_name))
-		else:
-			Restore = tf.train.import_meta_graph(self.bar_model_name)
-			Restore.restore(self.sess, tf.train.latest_checkpoint(self.bar_checkpoint_name))
-
-	def predict(self, censored, unused, mask):
-		img_sample = self.sess.run(self.image_result, feed_dict={self.X: censored, self.Y: unused, self.MASK: mask})
-
-		return img_sample
+    @torch.inference_mode()
+    def predict(self, image, original, mask):
+        inputs = [
+            torch.as_tensor(array, dtype=torch.float32, device=self.device).permute(0, 3, 1, 2)
+            for array in (image, original, mask)
+        ]
+        return self.model(*inputs).permute(0, 2, 3, 1).cpu().numpy()

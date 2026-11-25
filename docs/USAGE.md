@@ -19,12 +19,12 @@ Save these images in the PNG format to the "decensor_input" folder. **They MUST 
 
 Decensor the images by double-clicking on the decensor file.
 
-### B. Running from scratch
+### B. Running from source
 
-Decensor the images by running
+After [setting up the project with uv](INSTALLATION.md), run bar mode in the CLI.
 
-```
-$ python main.py
+```powershell
+uv run --locked python decensor.py
 ```
 
 Decensored images will be saved to the "decensor_output" folder. Decensoring takes a few minutes per image.
@@ -41,19 +41,19 @@ For example, if the original image is called "mermaid.jpg," then you want to put
 
 Decensor the images by double-clicking on the decensor_mosaic file.
 
-### B. Running from scratch
+### B. Running from source
 
-Decensor the images by running
+Run mosaic mode in the CLI.
 
-```
-$ python main.py
+```powershell
+uv run --locked python decensor.py --is_mosaic=true
 ```
 
 Decensored images will be saved to the "decensor_output" folder. Decensoring takes a few minutes per image.
 
 ## III. Decensoring with the user interface
 
-To be implemented.
+Run `uv run --locked python main.py`. Select **Bar censor** or **Mosaic censor**, choose the number of variations, then click **Decensor Your Images**. The status bar shows the active device.
 
 # Troubleshooting
 
