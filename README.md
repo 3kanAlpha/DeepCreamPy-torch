@@ -2,9 +2,11 @@
 
 [DeepCreamPy 2.2.0 BETA](https://github.com/Deepshift/DeepCreamPy)をPyTorch、PySide6で書き直した非公式アップデート版です。Windows 11 x64, Python 3.13.17, uv 0.13.5で動作確認をしました。
 
-## Windows用の配布版
+## (Windowsユーザー向け) ビルド済みexeファイルを使用する
 
-配布用ZIPを展開し、`DeepCreamPy.exe` を起動してください。Pythonやuvのインストールは不要です。ソースから配布版を作る手順は [Windows配布版のガイド](docs/INSTALLATION_BINARY.md) を参照してください。
+[最新リリース](https://github.com/3kanAlpha/DeepCreamPy-torch/releases/latest)から `DeepCreamPy-3.0.0-Windows-x64.7z` をダウンロードし、7zを展開した後 `DeepCreamPy.exe` を起動してください。Pythonやuvのインストールは不要です。
+
+Windows以外を利用している方や、ソースから直接実行したい方は以下の手順を参照してください。
 
 ## セットアップ手順
 
