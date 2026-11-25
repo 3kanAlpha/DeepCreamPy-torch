@@ -1,3 +1,43 @@
+# DeepCreamPy 3.0 (Unofficial)
+
+[DeepCreamPy 2.2.0 BETA](https://github.com/Deepshift/DeepCreamPy)をPyTorch、PySide6で書き直した非公式アップデート版です。Windows 11 x64, Python 3.13.17, uv 0.13.5で動作確認をしました。
+
+## セットアップ手順
+
+[uv](https://docs.astral.sh/uv/getting-started/installation/)をインストールしていない場合は、公式サイトからインストールしてください。
+
+uvのインストール後、以下を実行します。
+
+```sh
+uv sync --locked
+```
+
+CUDA 13.2対応のPyTorchを含む必要なパッケージがインストールされます。
+
+## 画像の復元に必要なモデルの準備
+
+以前のバージョンのDeepCreamPy用のモデルを持っていない場合、以下からダウンロードしてください。
+
+[original TensorFlow model archive](https://drive.google.com/open?id=1IMwzqZUuRnTv5jcuKdvZx-RZweknww5x)
+
+ダウンロードしたモデルはそれぞれ`models/bar/`と`models/mosaic/`へ配置してください。それぞれのフォルダに`checkpoint`, `.index`, `.data-*`という名前のファイルがあることを確認してください。
+
+以下のコマンドを実行して、TensorFlow用モデルからPyTorch用モデルを生成します。
+
+```sh
+uv run --locked --with tensorflow==2.21.0 python convert_models.py
+```
+
+このコマンドで`models/bar/inpaint.pt`と`models/mosaic/inpaint.pt`が生成されます。変換元のモデルファイルも保持されます。（オリジナルが必要ない場合は削除しても問題ありません）
+
+## ツールの起動
+
+以下のコマンドでGUIが起動します。ツールの使い方自体は旧バージョンと同じであるため、省略します。
+
+```sh
+uv run --locked python main.py
+```
+
 # DeepCreamPy
 *Plausibly Reconstruct Anime-style Artworks with Deep Neural Networks.*
 
