@@ -6,7 +6,7 @@ DeepCreamPy uses a PEPSI-derived convolutional encoder–decoder to fill masked 
 
 ## Bar and mosaic checkpoints
 
-Both modes instantiate the same `InpaintModel` and load different pretrained weights. For each connected marked region, the application crops a surrounding area and resizes the RGB crop and its binary mask to 256 × 256 using nearest-neighbor sampling. A mask value of 1 marks pixels to keep, and 0 marks pixels to fill. The encoder receives six channels formed by concatenating the RGB crop, normalized to `[-1, 1]`, with three copies of the mask. [Image preprocessing](../src/decensor.py) · [Model loading](../src/model.py)
+Both modes instantiate the same `InpaintModel` and load different pretrained weights. The application crops each connected marked region with its surrounding context and fits the crop into a 256 × 256 input without stretching it. RGB uses nearest-neighbor sampling. When the binary mask shrinks, a sample is marked for filling if it contains any marked source pixels. The application reflects the image and mask together to fill padding and to give marks at the image edge extra context. The encoder receives six channels formed by concatenating RGB normalized to `[-1, 1]` with three copies of the mask, where 1 marks pixels to keep and 0 marks pixels to fill. [Crop preparation](../src/libs/utils.py) · [Model loading](../src/model.py)
 
 | Mode | Checkpoint | RGB values inside the mask |
 | --- | --- | --- |
@@ -31,7 +31,7 @@ The encoder and hidden decoder convolutions use reflection padding and ELU activ
 
 The attention module downsamples the first mask channel to 32 × 32 using nearest-neighbor sampling. It zeros out masked locations in a copy of the encoder features before extracting 3 × 3 candidate patches. It compares these with query patches from the encoder feature map using squared Euclidean distance. For each query, it standardizes the distances across candidates, applies `-50 * tanh(standardized_distance)`, and takes a softmax over candidates. It then folds the weighted patches back into a feature map and uses them to fill masked feature locations before the 1 × 1 projection. [Contextual attention implementation](../src/model.py)
 
-The forward pass combines the decoded RGB with the source crop using `prediction * (1 - mask) + source * mask`. The application resizes the result back to the crop's original dimensions with bicubic sampling and pastes predictions only at pixels in the current marked region. The filled pixels are estimates generated from the input and surrounding context. [Model compositing](../src/model.py) · [Image compositing](../src/decensor.py)
+The forward pass combines the decoded RGB with the source crop using `prediction * (1 - mask) + source * mask`. The application removes the padding, resizes the floating-point result with bicubic sampling, and converts it to 8-bit RGB. It pastes only the originally marked pixels of the current region. Across a one-pixel gap, the application uses the average of the two intact neighbors when their colors agree closely, so thin gaps follow nearby lines and fills. The filled pixels are estimates generated from the input and surrounding context. [Model compositing](../src/model.py) · [Image compositing](../src/decensor.py)
 
 ## Training graph and weight conversion
 

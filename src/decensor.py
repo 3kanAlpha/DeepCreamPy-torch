@@ -7,7 +7,14 @@ from PySide6 import QtCore
 
 import config
 import file
-from libs.utils import connected_regions, expand_bounding, image_to_array, mask_pixels
+from libs.utils import (
+    bridge_thin_gaps,
+    connected_regions,
+    expand_bounding,
+    mask_pixels,
+    prepare_crop,
+    resize_prediction,
+)
 from model import InpaintNN
 
 """
@@ -176,16 +183,15 @@ class Decensor(QtCore.QThread):
             return image.transpose(Image.FLIP_LEFT_RIGHT).transpose(Image.FLIP_TOP_BOTTOM)
 
     def decensor_image_variation(self, ori, colored, variant_number, file_name):
+        if ori.size != colored.size:
+            raise ValueError("The source image and mask must have the same dimensions.")
         same_image = ori is colored
         ori = self.apply_variant(ori, variant_number)
         colored = ori if same_image else self.apply_variant(colored, variant_number)
-        #save the alpha channel if the image has an alpha channel
-        has_alpha = False
-        if (ori.mode == "RGBA"):
-            has_alpha = True
-            alpha_channel = np.asarray(ori)[:,:,3]
-            alpha_channel = np.expand_dims(alpha_channel, axis =-1)
-            ori = ori.convert('RGB')
+        alpha_channel = None
+        if "A" in ori.getbands() or "transparency" in ori.info:
+            alpha_channel = ori.convert("RGBA").getchannel("A")
+        ori = ori.convert("RGB")
 
         mask_color = [value * 255 for value in self.mask_color]
         marked = mask_pixels(colored.convert('RGB'), mask_color)
@@ -205,44 +211,38 @@ class Decensor(QtCore.QThread):
         self.signals.update_ProgressBar_MAX_VALUE.emit(len(regions))
         self.signals.update_ProgressBar_SET_VALUE.emit(0)
 
-        if not self.is_mosaic and not same_image:
-            marked = mask_pixels(ori.convert('RGB'), mask_color)
-        mask_img = Image.fromarray(np.where(marked, np.uint8(0), np.uint8(255)))
-        output_img_array = image_to_array(ori)
+        source_pixels = np.asarray(ori)
+        output_img_array = source_pixels.copy()
         completed = 0
         while completed < len(regions):
             batch = regions[completed:completed + self.model.batch_size]
             boxes = []
+            prediction_slices = []
             crops = []
             masks = []
             for region_counter, region in enumerate(batch, completed + 1):
                 self.signals.insertText_progressCursor.emit(
                     f"Decensoring regions in image, Decensoring censor {region_counter}/{len(regions)}"
                 )
-                box = expand_bounding(ori, region, expand_factor=1.5)
+                box = expand_bounding(ori, region)
                 boxes.append(box)
-                # Match the original input sampling and keep the mask binary.
-                crop = ori.crop(box).resize((256, 256), resample=Image.Resampling.NEAREST)
-                crop_array = image_to_array(crop)
-                crop_mask = mask_img.crop(box).resize((256, 256), resample=Image.Resampling.NEAREST)
-                known = np.asarray(crop_mask) != 0
+                crop, missing, prediction_slice = prepare_crop(ori, marked, box)
+                prediction_slices.append(prediction_slice)
                 if not self.is_mosaic:
-                    crop_array[~known] = 0
-                crops.append(crop_array)
-                masks.append(np.repeat(known[..., None], 3, axis=-1))
+                    crop[missing] = 0
+                crops.append(crop)
+                masks.append(np.repeat((~missing)[..., None], 3, axis=-1))
 
             images = np.stack(crops) * 2.0 - 1
             predictions = self.model.predict(images, images, np.stack(masks))
-            for region, box, prediction in zip(batch, boxes, predictions, strict=True):
+            for region, box, prediction_slice, prediction in zip(
+                batch, boxes, prediction_slices, predictions, strict=True
+            ):
                 left, top, right, bottom = box
-                prediction = (255.0 * ((prediction + 1.0) / 2.0)).astype(np.uint8)
-                pred_img = Image.fromarray(prediction).resize(
-                    (right - left, bottom - top), resample=Image.Resampling.BICUBIC
+                pred_array = resize_prediction(
+                    prediction[prediction_slice], (right - left, bottom - top)
                 )
-                pred_array = image_to_array(pred_img)
                 x, y = np.asarray(list(region)).T
-                inside = (left <= x) & (x < right) & (top <= y) & (y < bottom)
-                x, y = x[inside], y[inside]
                 output_img_array[y, x] = pred_array[y - top, x - left]
 
                 completed += 1
@@ -251,13 +251,10 @@ class Decensor(QtCore.QThread):
                 self.signals.insertText_progressCursor.emit(message + "\n")
                 print(message)
 
-        output_img_array = output_img_array * 255.0
-
-        #restore the alpha channel if the image had one
-        if has_alpha:
-            output_img_array = np.concatenate((output_img_array, alpha_channel), axis = 2)
-
-        output_img = Image.fromarray(output_img_array.astype('uint8'))
+        bridge_thin_gaps(source_pixels, marked, output_img_array)
+        output_img = Image.fromarray(output_img_array)
+        if alpha_channel is not None:
+            output_img.putalpha(alpha_channel)
         output_img = self.apply_variant(output_img, variant_number)
 
         # self.signals.update_progress_LABEL.emit("current image finished", "Decensoring of current image finished. Saving image...")

@@ -46,6 +46,8 @@ class InpaintModel(nn.Module):
                      - 2 * torch.bmm(keys, queries))
         centered = distances - distances.mean(dim=1, keepdim=True)
         deviation = centered.square().mean(dim=1, keepdim=True).sqrt()
+        # A uniform set of candidates should produce uniform attention.
+        deviation = deviation.clamp_min(torch.finfo(distances.dtype).eps)
         attention = torch.softmax(-50 * torch.tanh(centered / deviation), dim=1)
 
         patches = torch.bmm(keys.transpose(1, 2), attention)
