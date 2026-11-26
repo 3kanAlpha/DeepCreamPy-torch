@@ -51,9 +51,9 @@ class InpaintModel(nn.Module):
       - 2 * torch.bmm(keys, queries)
     )
     centered = distances - distances.mean(dim=1, keepdim=True)
-    deviation = centered.square().mean(dim=1, keepdim=True).sqrt()
-    # A uniform set of candidates should produce uniform attention.
-    deviation = deviation.clamp_min(torch.finfo(distances.dtype).eps)
+    variance = centered.square().mean(dim=1, keepdim=True)
+    # Bound the variance before sqrt so uniform candidates also have finite gradients.
+    deviation = variance.clamp_min(torch.finfo(distances.dtype).eps ** 2).sqrt()
     attention = torch.softmax(-50 * torch.tanh(centered / deviation), dim=1)
 
     patches = torch.bmm(keys.transpose(1, 2), attention)
@@ -80,10 +80,14 @@ class InpaintModel(nn.Module):
 
 
 class InpaintNN:
-  def __init__(self, is_mosaic=False):
+  def __init__(self, is_mosaic=False, *, weights_path=None):
     mode = "mosaic" if is_mosaic else "bar"
-    path = MODELS_DIR / mode / WEIGHTS_NAME
+    path = (
+      weights_path if weights_path is not None else MODELS_DIR / mode / WEIGHTS_NAME
+    )
     if not path.is_file():
+      if weights_path is not None:
+        raise FileNotFoundError(f"Missing weights file: {path}")
       raise FileNotFoundError(
         f"Missing {path}. Run the model conversion in docs/INSTALLATION.md."
       )

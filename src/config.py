@@ -22,7 +22,7 @@ def str2bool(v):
     raise argparse.ArgumentTypeError("Boolean value expected.")
 
 
-def get_args():
+def get_args(*, cli=False):
   parser = argparse.ArgumentParser(description="")
   data_directory = (
     Path(sys.executable).resolve().parent
@@ -77,6 +77,13 @@ def get_args():
     default=1,
     help="number of decensor variations to be generated",
   )
+  parser.set_defaults(bar_weights=None)
+  if cli:
+    parser.add_argument(
+      "--bar-weights",
+      type=Path,
+      help="path to a custom inpaint.pt checkpoint for bar mode",
+    )
 
   # Other settings
   parser.add_argument(
@@ -86,6 +93,8 @@ def get_args():
   )
 
   args = parser.parse_args()
+  if args.bar_weights is not None and args.is_mosaic:
+    parser.error("--bar-weights can only be used in bar mode")
   return args
 
 

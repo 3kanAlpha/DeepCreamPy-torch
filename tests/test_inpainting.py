@@ -111,11 +111,12 @@ class InpaintingTests(unittest.TestCase):
 
   def test_uniform_attention_candidates_are_finite(self):
     model = InpaintModel()
-    features = torch.zeros(1, 256, 5, 5)
+    features = torch.zeros(1, 256, 5, 5, requires_grad=True)
     known = torch.ones(1, 3, 40, 40)
-    with torch.inference_mode():
-      filled = model.contextual_block(features, known)
+    filled = model.contextual_block(features, known)
     self.assertTrue(torch.isfinite(filled).all().item())
+    filled.sum().backward()
+    self.assertTrue(torch.isfinite(features.grad).all().item())
 
 
 if __name__ == "__main__":

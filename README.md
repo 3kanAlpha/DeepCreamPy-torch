@@ -46,6 +46,8 @@ uv run --locked --with tensorflow==2.21.0 python src/convert_models.py
 uv run --locked python src/main.py
 ```
 
+独自のイラストでバー用モデルを学習する場合は、[データ準備と学習の手順](docs/TRAINING.ja.md)を参照してください。
+
 # DeepCreamPy
 *Plausibly Reconstruct Anime-style Artworks with Deep Neural Networks.*
 

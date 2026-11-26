@@ -32,10 +32,19 @@ class IgnoreAll(object):
 
 
 class Decensor(QtCore.QThread):
-  def __init__(self, parentThread=None, text_edit=None, text_cursor=None, ui_mode=None):
+  def __init__(
+    self,
+    parentThread=None,
+    text_edit=None,
+    text_cursor=None,
+    ui_mode=None,
+    *,
+    cli=False,
+  ):
     super().__init__(parentThread)
-    args = config.get_args()
+    args = config.get_args(cli=cli)
     self.is_mosaic = args.is_mosaic
+    self.bar_weights = args.bar_weights
     self.variations = args.variations
     self.mask_color = [
       args.mask_color_red / 255.0,
@@ -88,11 +97,13 @@ class Decensor(QtCore.QThread):
       return
 
     self.signals.insertText_progressCursor.emit("Loading model ... please wait ...\n")
-    self.model = InpaintNN(is_mosaic=self.is_mosaic)
+    self.model = InpaintNN(is_mosaic=self.is_mosaic, weights_path=self.bar_weights)
     self.loaded_mode = self.is_mosaic
     message = (
       f"Loaded {'mosaic' if self.is_mosaic else 'bar'} model on {self.model.device}"
     )
+    if self.bar_weights is not None:
+      message += f" from {self.bar_weights}"
     if self.model.fallback_reason:
       message += f" ({self.model.fallback_reason})"
     print(message, flush=True)
@@ -362,7 +373,7 @@ class Decensor(QtCore.QThread):
 
 if __name__ == "__main__":
   try:
-    Decensor().decensor_all_images_in_folder()
+    Decensor(cli=True).decensor_all_images_in_folder()
   except Exception as error:
     print(f"Processing stopped: {error}", file=sys.stderr)
     sys.exit(1)
