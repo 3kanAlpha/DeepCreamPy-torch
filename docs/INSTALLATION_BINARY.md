@@ -13,7 +13,7 @@ The bundle includes Python, PySide6, PyTorch, and both converted models. It uses
 On Windows x64, prepare the two converted model files as described in the [source installation guide](INSTALLATION.md#prepare-the-models), then run this command from the repository root.
 
 ```powershell
-uv run --locked --group windows-build python build_windows.py
+uv run --locked --group windows-build python src/build_windows.py
 ```
 
 The build creates `dist/DeepCreamPy/DeepCreamPy.exe` and `dist/DeepCreamPy-Windows-x64.zip`. Move an existing distribution out of `dist` before rebuilding.

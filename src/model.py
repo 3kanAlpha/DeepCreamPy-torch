@@ -1,3 +1,4 @@
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -6,7 +7,10 @@ from torch import nn
 from torch.nn import functional as F
 
 
-MODELS_DIR = Path(__file__).resolve().parent / "models"
+ROOT = Path(__file__).resolve().parent
+if not getattr(sys, "frozen", False):
+    ROOT = ROOT.parent
+MODELS_DIR = ROOT / "models"
 WEIGHTS_NAME = "inpaint.pt"
 
 

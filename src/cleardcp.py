@@ -20,9 +20,10 @@ def clear_folder(folder_path: Union[str, bytes]) -> None:
 
 
 def main():
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     folders_to_clear = ["decensor_input", "decensor_input_original", "decensor_output"]
     for folder in folders_to_clear:
-        folder_path = os.path.join(os.path.dirname(__file__), folder)
+        folder_path = os.path.join(root, folder)
         clear_folder(folder_path)
 
 

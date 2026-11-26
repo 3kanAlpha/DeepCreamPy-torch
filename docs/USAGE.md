@@ -24,7 +24,7 @@ Open `DeepCreamPy.exe`, select **Bar censor**, and click **Decensor Your Images*
 After [setting up the project with uv](INSTALLATION.md), run bar mode in the CLI.
 
 ```powershell
-uv run --locked python decensor.py
+uv run --locked python src/decensor.py
 ```
 
 Decensored images will be saved to the "decensor_output" folder. Decensoring takes a few minutes per image.
@@ -46,14 +46,14 @@ Open `DeepCreamPy.exe`, select **Mosaic censor**, and click **Decensor Your Imag
 Run mosaic mode in the CLI.
 
 ```powershell
-uv run --locked python decensor.py --is_mosaic=true
+uv run --locked python src/decensor.py --is_mosaic=true
 ```
 
 Decensored images will be saved to the "decensor_output" folder. Decensoring takes a few minutes per image.
 
 ## III. Decensoring with the user interface
 
-Run `uv run --locked python main.py`. Select **Bar censor** or **Mosaic censor**, choose the number of variations, then click **Decensor Your Images**. The status bar shows the active device.
+Run `uv run --locked python src/main.py`. Select **Bar censor** or **Mosaic censor**, choose the number of variations, then click **Decensor Your Images**. The status bar shows the active device.
 
 # Troubleshooting
 

@@ -10,7 +10,7 @@ from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile
 
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]
 NAME = "DeepCreamPy"
 ARCHIVE = f"{NAME}-Windows-x64.zip"
 
@@ -48,7 +48,7 @@ def main():
         subprocess.run(
             [sys.executable, "-m", "PyInstaller", "--onedir", "--windowed", "--noupx",
              "--name", NAME, "--distpath", str(stage), "--specpath", str(stage),
-             "--workpath", str(stage / "work"), *model_data, "main.py"],
+             "--workpath", str(stage / "work"), *model_data, "src/main.py"],
             cwd=ROOT, env={**os.environ, "PYINSTALLER_CONFIG_DIR": str(stage / "cache")},
             check=True,
         )

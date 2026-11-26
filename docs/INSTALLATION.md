@@ -17,7 +17,7 @@ Download the [original TensorFlow model archive](https://drive.google.com/open?i
 Run the conversion once after placing or replacing the original models.
 
 ```powershell
-uv run --locked --with tensorflow==2.21.0 python convert_models.py
+uv run --locked --with tensorflow==2.21.0 python src/convert_models.py
 ```
 
 This writes `models/bar/inpaint.pt` and `models/mosaic/inpaint.pt` and preserves the original checkpoints. TensorFlow is installed only in the temporary environment for this command.
@@ -27,12 +27,12 @@ This writes `models/bar/inpaint.pt` and `models/mosaic/inpaint.pt` and preserves
 Follow the [image preparation guide](USAGE.md), then use one of these commands.
 
 ```powershell
-uv run --locked python main.py
-uv run --locked python decensor.py
-uv run --locked python decensor.py --is_mosaic=true
+uv run --locked python src/main.py
+uv run --locked python src/decensor.py
+uv run --locked python src/decensor.py --is_mosaic=true
 ```
 
-The first command opens the GUI. The second runs the CLI in bar mode. The third runs the CLI in mosaic mode. Use `uv run --locked python decensor.py --help` to see the available CLI options.
+The first command opens the GUI. The second runs the CLI in bar mode. The third runs the CLI in mosaic mode. Use `uv run --locked python src/decensor.py --help` to see the available CLI options.
 
 ## Windows distribution
 

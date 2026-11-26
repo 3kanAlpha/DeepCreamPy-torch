@@ -33,7 +33,7 @@ CUDA 13.2対応のPyTorchを含む必要なパッケージがインストール�
 以下のコマンドを実行して、TensorFlow用モデルからPyTorch用モデルを生成します。
 
 ```sh
-uv run --locked --with tensorflow==2.21.0 python convert_models.py
+uv run --locked --with tensorflow==2.21.0 python src/convert_models.py
 ```
 
 このコマンドで`models/bar/inpaint.pt`と`models/mosaic/inpaint.pt`が生成されます。変換元のモデルファイルも保持されます。（オリジナルが必要ない場合は削除しても問題ありません）
@@ -43,7 +43,7 @@ uv run --locked --with tensorflow==2.21.0 python convert_models.py
 以下のコマンドでGUIが起動します。ツールの使い方自体は旧バージョンと同じであるため、省略します。
 
 ```sh
-uv run --locked python main.py
+uv run --locked python src/main.py
 ```
 
 # DeepCreamPy
