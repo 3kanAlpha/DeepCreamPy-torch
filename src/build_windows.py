@@ -11,7 +11,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 NAME = "DeepCreamPy"
 ARCHIVE = f"{NAME}-Windows-x64.7z"
-SEVEN_ZIP_COMPRESSION_LEVEL = 7
+COMPRESSION_LEVEL = 7
 BUNDLE_MODELS = ("bar", "mosaic")
 BUNDLE_DIRECTORIES = (
   "decensor_input",
@@ -21,7 +21,7 @@ BUNDLE_DIRECTORIES = (
 )
 
 
-def _is_working_seven_zip(executable):
+def _is_working_nanazip(executable):
   try:
     result = subprocess.run(
       [executable, "i"],
@@ -34,27 +34,15 @@ def _is_working_seven_zip(executable):
   return result.returncode == 0
 
 
-def find_seven_zip():
+def find_nanazip():
   candidates = []
-  for executable in ("7z", "7za"):
-    found = shutil.which(executable)
-    if found:
-      candidates.append(found)
+  found = shutil.which("NanaZipC")
+  if found:
+    candidates.append(found)
 
-  for env_var, default_dir in (
-    ("ProgramFiles", r"C:\Program Files"),
-    ("ProgramFiles(x86)", r"C:\Program Files (x86)"),
-  ):
-    candidate = Path(os.environ.get(env_var, default_dir)) / "7-Zip" / "7z.exe"
-    if candidate.is_file():
-      candidates.append(str(candidate))
-
-  scoop_roots = []
-  if os.environ.get("SCOOP"):
-    scoop_roots.append(Path(os.environ["SCOOP"]))
-  scoop_roots.append(Path.home() / "scoop")
-  for scoop_root in scoop_roots:
-    candidate = scoop_root / "apps" / "7zip" / "current" / "7z.exe"
+  local_app_data = os.environ.get("LOCALAPPDATA")
+  if local_app_data:
+    candidate = Path(local_app_data) / "Microsoft" / "WindowsApps" / "NanaZipC.exe"
     if candidate.is_file():
       candidates.append(str(candidate))
 
@@ -64,18 +52,18 @@ def find_seven_zip():
     if key in seen:
       continue
     seen.add(key)
-    if _is_working_seven_zip(candidate):
+    if _is_working_nanazip(candidate):
       return candidate
   return None
 
 
-def create_7z_archive(seven_zip, stage, archive_path):
+def create_7z_archive(nanazip, stage, archive_path):
   subprocess.run(
     [
-      seven_zip,
+      nanazip,
       "a",
       "-t7z",
-      f"-mx={SEVEN_ZIP_COMPRESSION_LEVEL}",
+      f"-mx={COMPRESSION_LEVEL}",
       str(archive_path),
       NAME,
     ],
@@ -153,20 +141,20 @@ def main():
       (bundle / directory).mkdir(parents=True, exist_ok=True)
     copy_notices(bundle)
 
-    seven_zip = find_seven_zip()
-    if seven_zip is not None:
+    nanazip = find_nanazip()
+    if nanazip is not None:
       print(
-        f"Compressing {ARCHIVE} (level {SEVEN_ZIP_COMPRESSION_LEVEL})...",
+        f"Compressing {ARCHIVE} (level {COMPRESSION_LEVEL})...",
         flush=True,
       )
-      create_7z_archive(seven_zip, stage, stage / ARCHIVE)
+      create_7z_archive(nanazip, stage, stage / ARCHIVE)
       bundle.rename(dist / NAME)
       (stage / ARCHIVE).rename(dist / ARCHIVE)
       print(f"Distribution is ready at {dist / ARCHIVE}")
     else:
       bundle.rename(dist / NAME)
       print(
-        "Warning: 7z executable not found. Skipped creating "
+        "Warning: NanaZipC executable not found. Skipped creating "
         f"{ARCHIVE}; bundle folder is ready at {dist / NAME}",
         file=sys.stderr,
       )

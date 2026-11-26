@@ -20,7 +20,7 @@ On Windows x64, prepare the two converted PEPSI model files (`models/bar/inpaint
 uv run --locked --group windows-build python src/build_windows.py
 ```
 
-The build creates `dist/DeepCreamPy/DeepCreamPy.exe` (with an empty `models/lama/` folder and without bundling `models/lama/inpaint.pt`). If 7-Zip (`7z`) is available on `PATH` or in the standard installation directory, it also creates `dist/DeepCreamPy-Windows-x64.7z` at compression level 7 (`-mx=7`). If `7z` is not found, the build prints a warning and outputs only `dist/DeepCreamPy/`. Move an existing distribution out of `dist` before rebuilding.
+The build creates `dist/DeepCreamPy/DeepCreamPy.exe` (with an empty `models/lama/` folder and without bundling `models/lama/inpaint.pt`). If NanaZip (`NanaZipC`) is available on `PATH` or in `%LOCALAPPDATA%\Microsoft\WindowsApps`, it also creates `dist/DeepCreamPy-Windows-x64.7z` at compression level 7 (`-mx=7`). If `NanaZipC` is not found, the build prints a warning and outputs only `dist/DeepCreamPy/`. Move an existing distribution out of `dist` before rebuilding.
 
 ## Legacy releases
 

@@ -56,7 +56,7 @@ class BuildWindowsTests(unittest.TestCase):
       with (
         patch.object(build_windows, "ROOT", repo),
         patch.object(build_windows, "distributions", return_value=[]),
-        patch.object(build_windows, "find_seven_zip", return_value="7z"),
+        patch.object(build_windows, "find_nanazip", return_value="NanaZipC"),
         patch.object(build_windows.subprocess, "run", side_effect=fake_run),
       ):
         build_windows.main()
@@ -74,7 +74,7 @@ class BuildWindowsTests(unittest.TestCase):
 
       self.assertEqual(len(seven_zip_cmds), 1)
       sz_cmd, sz_kwargs = seven_zip_cmds[0]
-      self.assertEqual(sz_cmd[:4], ["7z", "a", "-t7z", "-mx=7"])
+      self.assertEqual(sz_cmd[:4], ["NanaZipC", "a", "-t7z", "-mx=7"])
       self.assertEqual(sz_cmd[5], build_windows.NAME)
       self.assertTrue(sz_kwargs["check"])
 
@@ -84,7 +84,7 @@ class BuildWindowsTests(unittest.TestCase):
       self.assertFalse((bundle_dir / "models" / "lama" / "inpaint.pt").exists())
       self.assertTrue((repo / "dist" / build_windows.ARCHIVE).is_file())
 
-  def test_build_warns_and_keeps_folder_when_7z_missing(self):
+  def test_build_warns_and_keeps_folder_when_nanazip_missing(self):
     with tempfile.TemporaryDirectory() as tmp:
       repo = Path(tmp)
       self._prepare_fake_repo(repo, include_lama_model=False)
@@ -100,21 +100,21 @@ class BuildWindowsTests(unittest.TestCase):
       with (
         patch.object(build_windows, "ROOT", repo),
         patch.object(build_windows, "distributions", return_value=[]),
-        patch.object(build_windows, "find_seven_zip", return_value=None),
+        patch.object(build_windows, "find_nanazip", return_value=None),
         patch.object(build_windows.subprocess, "run", side_effect=fake_run),
         redirect_stderr(stderr),
       ):
         build_windows.main()
 
-      self.assertIn("7z executable not found", stderr.getvalue())
+      self.assertIn("NanaZipC executable not found", stderr.getvalue())
       self.assertTrue((repo / "dist" / build_windows.NAME).is_dir())
       self.assertTrue((repo / "dist" / build_windows.NAME / "models" / "lama").is_dir())
       self.assertFalse((repo / "dist" / build_windows.ARCHIVE).exists())
 
-  def test_create_7z_archive_real_if_7z_available(self):
-    seven_zip = build_windows.find_seven_zip()
-    if seven_zip is None:
-      self.skipTest("7z executable is not installed")
+  def test_create_7z_archive_real_if_nanazip_available(self):
+    nanazip = build_windows.find_nanazip()
+    if nanazip is None:
+      self.skipTest("NanaZipC executable is not available in this environment")
     with tempfile.TemporaryDirectory() as tmp:
       stage = Path(tmp)
       bundle = stage / build_windows.NAME
@@ -122,11 +122,11 @@ class BuildWindowsTests(unittest.TestCase):
       (bundle / "hello.txt").write_text("deepcreamy", encoding="utf-8")
       archive_path = stage / build_windows.ARCHIVE
 
-      build_windows.create_7z_archive(seven_zip, stage, archive_path)
+      build_windows.create_7z_archive(nanazip, stage, archive_path)
       self.assertTrue(archive_path.is_file())
 
       listing = subprocess.run(
-        [seven_zip, "l", "-slt", "-sccUTF-8", str(archive_path)],
+        [nanazip, "l", "-slt", "-sccUTF-8", str(archive_path)],
         capture_output=True,
         text=True,
         encoding="utf-8",
