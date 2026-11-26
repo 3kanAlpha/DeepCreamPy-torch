@@ -15,6 +15,9 @@ dependencies = [
 ]
 
 [dependency-groups]
+dev = [
+    "ruff>=0.17.6",
+]
 windows-build = ["pyinstaller==6.22.3"]
 
 [tool.uv]
