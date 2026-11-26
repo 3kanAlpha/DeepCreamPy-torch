@@ -11,7 +11,9 @@ from libs.utils import (
   prepare_crop,
   prepare_lama_crop,
   resize_lama_prediction,
-  resize_prediction,
+  resize_prediction_float,
+  seamless_blend_region,
+  suppress_monochrome_chroma,
 )
 
 ROOT = Path(__file__).resolve().parent
@@ -21,6 +23,41 @@ MODELS_DIR = ROOT / "models"
 WEIGHTS_NAME = "inpaint.pt"
 LAMA_WEIGHTS_PATH = MODELS_DIR / "lama" / WEIGHTS_NAME
 MODEL_CHOICES = ("pepsi", "lama")
+# (horizontal_flip, dy, dx) in 256x256 input space
+PEPSI_TTA_VIEWS = (
+  (False, 0, 0),
+  (True, 0, 0),
+  (False, 2, 2),
+  (True, 2, 2),
+)
+
+
+def _shift_reflect(array, dy, dx):
+  if dy == 0 and dx == 0:
+    return array
+  height, width = array.shape[:2]
+  pad_y, pad_x = abs(dy), abs(dx)
+  padded = np.pad(array, ((pad_y, pad_y), (pad_x, pad_x), (0, 0)), mode="reflect")
+  y0 = pad_y - dy
+  x0 = pad_x - dx
+  return padded[y0 : y0 + height, x0 : x0 + width]
+
+
+def _unshift_with_valid(prediction, dy, dx):
+  height, width = prediction.shape[:2]
+  if dy == 0 and dx == 0:
+    return prediction, np.ones((height, width), dtype=np.float32)
+  out = np.zeros_like(prediction)
+  valid = np.zeros((height, width), dtype=np.float32)
+  src_y0, src_y1 = max(0, dy), min(height, height + dy)
+  src_x0, src_x1 = max(0, dx), min(width, width + dx)
+  dst_y0 = max(0, -dy)
+  dst_x0 = max(0, -dx)
+  dst_y1 = dst_y0 + (src_y1 - src_y0)
+  dst_x1 = dst_x0 + (src_x1 - src_x0)
+  out[dst_y0:dst_y1, dst_x0:dst_x1] = prediction[src_y0:src_y1, src_x0:src_x1]
+  valid[dst_y0:dst_y1, dst_x0:dst_x1] = 1.0
+  return out, valid
 
 
 class InpaintModel(nn.Module):
@@ -73,7 +110,7 @@ class InpaintModel(nn.Module):
     filled = background + copied * (1 - mask)
     return F.elu(self.context_merge(torch.cat((features, filled), dim=1)))
 
-  def forward(self, image, original, mask):
+  def forward_raw(self, image, mask):
     features = torch.cat((image, mask), dim=1)
     for convolution in self.encoder:
       border = (convolution.kernel_size[0] // 2) * convolution.dilation[0]
@@ -85,12 +122,15 @@ class InpaintModel(nn.Module):
       if i in (1, 3, 5):
         features = F.interpolate(features, scale_factor=2, mode="nearest")
 
-    filled = self.decoder[-1](features).clamp(-1, 1)
+    return self.decoder[-1](features).clamp(-1, 1)
+
+  def forward(self, image, original, mask):
+    filled = self.forward_raw(image, mask)
     return filled * (1 - mask) + original * mask
 
 
 class InpaintNN:
-  def __init__(self, is_mosaic=False, *, weights_path=None):
+  def __init__(self, is_mosaic=False, *, weights_path=None, use_tta=True):
     mode = "mosaic" if is_mosaic else "bar"
     path = (
       weights_path if weights_path is not None else MODELS_DIR / mode / WEIGHTS_NAME
@@ -105,6 +145,7 @@ class InpaintNN:
     state = torch.load(path, map_location="cpu", weights_only=True)
     self.model = InpaintModel().eval()
     self.model.load_state_dict(state)
+    self.use_tta = use_tta
     self.device = torch.device("cpu")
     self.fallback_reason = "CUDA is unavailable"
 
@@ -150,7 +191,77 @@ class InpaintNN:
     ]
     return self.model(*inputs).permute(0, 2, 3, 1).cpu().numpy()
 
-  def inpaint_crops(self, ori, marked, boxes, *, is_mosaic=False):
+  @torch.inference_mode()
+  def predict_raw(self, image, mask):
+    try:
+      return self._predict_raw(image, mask)
+    except torch.cuda.OutOfMemoryError:
+      if self.device.type != "cuda" or len(image) <= 1:
+        raise
+      self.batch_size = 1
+
+    # Retry after leaving the exception handler so the failed batch can be freed.
+    return np.concatenate(
+      [self._predict_raw(image[i : i + 1], mask[i : i + 1]) for i in range(len(image))]
+    )
+
+  def _predict_raw(self, image, mask):
+    inputs = [
+      torch.as_tensor(array, dtype=torch.float32, device=self.device).permute(
+        0, 3, 1, 2
+      )
+      for array in (image, mask)
+    ]
+    return self.model.forward_raw(*inputs).permute(0, 2, 3, 1).cpu().numpy()
+
+  def predict_raw_tta(self, images, masks, *, views=PEPSI_TTA_VIEWS):
+    """Run raw inference across flipped/shifted views and average aligned predictions."""
+    count = len(images)
+    view_images = []
+    view_masks = []
+    for flip, dy, dx in views:
+      for i in range(count):
+        image = images[i]
+        mask = masks[i]
+        if flip:
+          image = image[:, ::-1, :]
+          mask = mask[:, ::-1, :]
+        view_images.append(_shift_reflect(image, dy, dx))
+        view_masks.append(_shift_reflect(mask, dy, dx))
+
+    stacked_images = np.stack(view_images)
+    stacked_masks = np.stack(view_masks)
+    chunks = []
+    start = 0
+    while start < len(stacked_images):
+      step = max(1, self.batch_size)
+      chunks.append(
+        self.predict_raw(
+          stacked_images[start : start + step],
+          stacked_masks[start : start + step],
+        )
+      )
+      start += step
+    raw_all = np.concatenate(chunks, axis=0)
+
+    averaged = []
+    for i in range(count):
+      acc = np.zeros_like(images[i], dtype=np.float32)
+      weight = np.zeros(images[i].shape[:2], dtype=np.float32)
+      for view_index, (flip, dy, dx) in enumerate(views):
+        pred = raw_all[view_index * count + i]
+        pred, valid = _unshift_with_valid(pred, dy, dx)
+        if flip:
+          pred = pred[:, ::-1, :]
+          valid = valid[:, ::-1]
+        acc += pred * valid[..., None]
+        weight += valid
+      averaged.append(acc / np.maximum(weight, 1.0)[..., None])
+    return np.stack(averaged, axis=0)
+
+  def inpaint_crops(
+    self, ori, marked, boxes, *, is_mosaic=False, regions=None, use_tta=None
+  ):
     prediction_slices = []
     crops = []
     masks = []
@@ -163,15 +274,40 @@ class InpaintNN:
       masks.append(np.repeat((~missing)[..., None], 3, axis=-1))
 
     images = np.stack(crops) * 2.0 - 1
-    predictions = self.predict(images, images, np.stack(masks))
-    return [
-      resize_prediction(
-        prediction[prediction_slice], (box[2] - box[0], box[3] - box[1])
+    masks_stack = np.stack(masks)
+    apply_tta = self.use_tta if use_tta is None else use_tta
+    if apply_tta:
+      raw_predictions = self.predict_raw_tta(images, masks_stack)
+    else:
+      raw_predictions = self.predict_raw(images, masks_stack)
+    region_list = regions if regions is not None else [None] * len(boxes)
+    results = []
+    for box, prediction_slice, raw_prediction, region in zip(
+      boxes, prediction_slices, raw_predictions, region_list, strict=True
+    ):
+      left, top, right, bottom = box
+      width, height = right - left, bottom - top
+      pred_float = resize_prediction_float(
+        raw_prediction[prediction_slice], (width, height)
       )
-      for box, prediction_slice, prediction in zip(
-        boxes, prediction_slices, predictions, strict=True
+      source_crop = np.asarray(ori.crop(box), dtype=np.float32)
+      crop_marked = marked[top:bottom, left:right]
+      known_mask = ~crop_marked
+      if region is not None:
+        region_mask = np.zeros((height, width), dtype=bool)
+        rx, ry = np.asarray(list(region)).T
+        region_mask[ry - top, rx - left] = True
+      else:
+        region_mask = crop_marked
+
+      pred_float = seamless_blend_region(
+        pred_float, source_crop, region_mask, known_mask
       )
-    ]
+      pred_float = suppress_monochrome_chroma(
+        pred_float, source_crop, region_mask, known_mask
+      )
+      results.append(np.rint(pred_float.clip(0.0, 255.0)).astype(np.uint8))
+    return results
 
 
 class LamaInpainter:
@@ -216,7 +352,7 @@ class LamaInpainter:
     ).permute(0, 3, 1, 2)
     return self.model(image_tensor, mask_tensor).permute(0, 2, 3, 1).cpu().numpy()
 
-  def inpaint_crops(self, ori, marked, boxes, *, is_mosaic=False):
+  def inpaint_crops(self, ori, marked, boxes, *, is_mosaic=False, regions=None):
     if is_mosaic:
       raise ValueError("LaMa is only supported in bar mode")
     results = []
@@ -234,9 +370,11 @@ class LamaInpainter:
     return results
 
 
-def create_inpainter(model_name="pepsi", *, is_mosaic=False, weights_path=None):
+def create_inpainter(
+  model_name="pepsi", *, is_mosaic=False, weights_path=None, use_tta=True
+):
   if model_name == "pepsi":
-    return InpaintNN(is_mosaic=is_mosaic, weights_path=weights_path)
+    return InpaintNN(is_mosaic=is_mosaic, weights_path=weights_path, use_tta=use_tta)
   if model_name == "lama":
     if is_mosaic:
       raise ValueError("LaMa is only supported in bar mode")

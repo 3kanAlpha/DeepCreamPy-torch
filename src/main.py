@@ -77,10 +77,17 @@ class MainWindow(QWidget):
     self.lamaModelButton = QRadioButton("LaMa (Bar only)")
     self.lamaModelButton.setToolTip("LaMa is available in Bar censor mode only.")
     self.pepsiModelButton.setChecked(True)
+    self.ttaCheckbox = QCheckBox("Use TTA (flip + shift)")
+    self.ttaCheckbox.setChecked(True)
+    self.ttaCheckbox.setToolTip(
+      "Average 4 horizontal-flip and small-shift views for higher PEPSI accuracy."
+    )
+    self.pepsiModelButton.toggled.connect(self.ttaCheckbox.setEnabled)
 
     modelLayout = QVBoxLayout()
     modelLayout.addWidget(self.pepsiModelButton)
     modelLayout.addWidget(self.lamaModelButton)
+    modelLayout.addWidget(self.ttaCheckbox)
     self.modelGroupBox.setLayout(modelLayout)
 
     # Variation count group
@@ -187,6 +194,7 @@ class MainWindow(QWidget):
       if self.lamaModelButton.isChecked() and not self.decensor.is_mosaic
       else "pepsi"
     )
+    self.decensor.use_tta = self.ttaCheckbox.isChecked()
 
     # variations count
     variationsElements = self.variationsGroupBox.children()

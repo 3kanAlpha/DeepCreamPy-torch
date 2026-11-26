@@ -83,6 +83,12 @@ def get_args(*, cli=False):
     default=1,
     help="number of decensor variations to be generated",
   )
+  parser.add_argument(
+    "--tta",
+    action=argparse.BooleanOptionalAction,
+    default=True,
+    help="enable horizontal-flip and small-shift TTA for PEPSI (default: enabled)",
+  )
   parser.set_defaults(bar_weights=None)
   if cli:
     parser.add_argument(

@@ -48,6 +48,7 @@ class Decensor(QtCore.QThread):
     self.is_mosaic = args.is_mosaic
     self.bar_weights = args.bar_weights
     self.variations = args.variations
+    self.use_tta = args.tta
     self.mask_color = [
       args.mask_color_red / 255.0,
       args.mask_color_green / 255.0,
@@ -97,6 +98,8 @@ class Decensor(QtCore.QThread):
   def load_model(self):
     config_key = (self.model_name, self.is_mosaic, self.bar_weights)
     if self.model is not None and self.loaded_config == config_key:
+      if hasattr(self.model, "use_tta"):
+        self.model.use_tta = self.use_tta
       return
 
     if self.model is not None:
@@ -107,7 +110,10 @@ class Decensor(QtCore.QThread):
 
     self.signals.insertText_progressCursor.emit("Loading model ... please wait ...\n")
     self.model = create_inpainter(
-      self.model_name, is_mosaic=self.is_mosaic, weights_path=self.bar_weights
+      self.model_name,
+      is_mosaic=self.is_mosaic,
+      weights_path=self.bar_weights,
+      use_tta=self.use_tta,
     )
     self.loaded_config = config_key
     mode = "mosaic" if self.is_mosaic else "bar"
@@ -291,7 +297,7 @@ class Decensor(QtCore.QThread):
 
       if hasattr(self.model, "inpaint_crops"):
         pred_arrays = self.model.inpaint_crops(
-          ori, marked, boxes, is_mosaic=self.is_mosaic
+          ori, marked, boxes, is_mosaic=self.is_mosaic, regions=batch
         )
       else:
         prediction_slices = []

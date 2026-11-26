@@ -20,10 +20,13 @@ from libs.utils import (
   bridge_thin_gaps,
   connected_regions,
   expand_bounding,
+  mask_pixels,
   prepare_crop,
   prepare_lama_crop,
+  seamless_blend_region,
+  suppress_monochrome_chroma,
 )
-from model import InpaintModel, LamaInpainter, create_inpainter
+from model import InpaintModel, InpaintNN, LamaInpainter, create_inpainter
 
 
 class RecordingModel:
@@ -242,6 +245,136 @@ class InpaintingTests(unittest.TestCase):
       with self.assertRaises(SystemExit) as ctx:
         config.get_args(cli=True)
       self.assertEqual(ctx.exception.code, 2)
+
+  def test_mask_pixels_absorbs_antialiased_fringe_locally(self):
+    pixels = np.full((24, 24, 3), (220, 190, 175), dtype=np.uint8)
+    pixels[8:16, 8:16] = (0, 255, 0)
+    # Anti-aliased green fringe (1px and 2px out) touching the exact mask.
+    pixels[7, 8:16] = (120, 255, 120)
+    pixels[6, 10:14] = (150, 230, 150)
+    # Mild mint-green below chroma threshold touching the exact mask should remain kept.
+    pixels[16, 8:16] = (196, 247, 222)
+    # Unconnected green object far from the exact mask should never be absorbed.
+    pixels[1:4, 1:4] = (10, 220, 10)
+    image = Image.fromarray(pixels)
+
+    exact = mask_pixels(image, [0, 255, 0], absorb_fringe=False)
+    absorbed = mask_pixels(image, [0, 255, 0], absorb_fringe=True)
+
+    self.assertEqual(int(exact.sum()), 64)
+    self.assertTrue(absorbed[7, 8:16].all())
+    self.assertTrue(absorbed[6, 10:14].all())
+    self.assertFalse(absorbed[16, 8:16].any())
+    self.assertFalse(absorbed[1:4, 1:4].any())
+
+    tiny = Image.new("RGB", (1, 1), (0, 255, 0))
+    self.assertTrue(mask_pixels(tiny, [0, 255, 0]).all())
+
+  def test_prepare_crop_mask_aware_resampling_avoids_green_bleed(self):
+    # Downscaling case (512 -> 256): anti-aliased averaging without green bleed.
+    down = np.full((512, 512, 3), (200, 180, 160), dtype=np.uint8)
+    down[:, ::2] = (40, 40, 40)
+    marked_down = np.zeros((512, 512), dtype=bool)
+    marked_down[220:290, 220:290] = True
+    down[marked_down] = (0, 255, 0)
+    rgb_down, missing_down, _ = prepare_crop(
+      Image.fromarray(down), marked_down, (0, 0, 512, 512)
+    )
+    valid_down = rgb_down[~missing_down]
+    self.assertTrue(
+      np.allclose(valid_down, (120 / 255, 110 / 255, 100 / 255), atol=0.02)
+    )
+
+    # Upscaling case (128 -> 256): smooth gradient on valid pixels without green bleed.
+    grad = np.linspace(40, 200, 128, dtype=np.uint8)
+    up = np.broadcast_to(grad[None, :, None], (128, 128, 3)).copy()
+    marked_up = np.zeros((128, 128), dtype=bool)
+    marked_up[50:78, 50:78] = True
+    up[marked_up] = (0, 255, 0)
+    rgb_up, missing_up, _ = prepare_crop(
+      Image.fromarray(up), marked_up, (0, 0, 128, 128)
+    )
+    valid_up = rgb_up[~missing_up]
+    # Pure green would spike G - R well above 0; grayscale gradient keeps G == R.
+    self.assertLess(float(np.max(np.abs(valid_up[:, 1] - valid_up[:, 0]))), 1e-4)
+
+  def test_seamless_blend_region_corrects_offset_and_clamps_spikes(self):
+    source = np.full((32, 32, 3), 200.0, dtype=np.float32)
+    raw = np.full((32, 32, 3), 185.0, dtype=np.float32)
+    region = np.zeros((32, 32), dtype=bool)
+    region[10:22, 10:22] = True
+    known = ~region
+
+    blended = seamless_blend_region(raw, source, region, known)
+    # Boundary pixels of the region should closely match source (200) instead of 185.
+    self.assertGreater(float(blended[10, 15, 0]), 198.0)
+    self.assertLess(float(blended[10, 15, 0]), 201.0)
+    # Non-region pixels remain unchanged.
+    np.testing.assert_array_equal(blended[known], raw[known])
+
+    # Extreme single-pixel spike on the ring is bounded by max_shift.
+    spiky_source = source.copy()
+    spiky_source[9, 15] = 0.0
+    blended_spiky = seamless_blend_region(
+      raw, spiky_source, region, known, max_shift=20.0
+    )
+    self.assertGreater(float(blended_spiky[region].min()), 164.0)
+
+  def test_suppress_monochrome_chroma_handles_grayscale_and_color(self):
+    region = np.zeros((20, 20), dtype=bool)
+    region[6:14, 6:14] = True
+    known = ~region
+
+    gray_source = np.full((20, 20, 3), 180.0, dtype=np.float32)
+    tinted_pred = np.full((20, 20, 3), (170.0, 200.0, 165.0), dtype=np.float32)
+    cleaned = suppress_monochrome_chroma(tinted_pred, gray_source, region, known)
+    spread = cleaned[region].max(axis=1) - cleaned[region].min(axis=1)
+    self.assertLess(float(spread.max()), 1e-4)
+
+    color_source = np.full((20, 20, 3), (240.0, 200.0, 180.0), dtype=np.float32)
+    untouched = suppress_monochrome_chroma(tinted_pred, color_source, region, known)
+    np.testing.assert_array_equal(untouched, tinted_pred)
+
+  def test_pepsi_tta_alignment_chunking_and_cli_flags(self):
+    # Build a lightweight InpaintNN instance with a deterministic identity raw predictor
+    # to verify exact spatial alignment across flip + shift views and batch chunking.
+    inpainter = InpaintNN.__new__(InpaintNN)
+    inpainter.batch_size = 3
+    inpainter.use_tta = True
+    call_sizes = []
+
+    def fake_predict_raw(images, masks):
+      call_sizes.append(len(images))
+      return images.astype(np.float32)
+
+    inpainter.predict_raw = fake_predict_raw
+
+    rng = np.random.default_rng(7)
+    images = rng.uniform(-1.0, 1.0, size=(2, 32, 32, 3)).astype(np.float32)
+    masks = np.ones((2, 32, 32, 3), dtype=np.float32)
+
+    averaged = inpainter.predict_raw_tta(images, masks)
+    np.testing.assert_allclose(averaged, images, atol=1e-6)
+    # 2 crops x 4 views = 8 items, chunked by batch_size=3 -> [3, 3, 2].
+    self.assertEqual(call_sizes, [3, 3, 2])
+
+    # Asymmetric predictor should become horizontally equivariant after TTA.
+    def asymmetric_predict_raw(batch_images, batch_masks):
+      width = batch_images.shape[2]
+      ramp = np.linspace(-1.0, 1.0, width, dtype=np.float32)[None, None, :, None]
+      return (batch_images * 0.5 + ramp).astype(np.float32)
+
+    inpainter.predict_raw = asymmetric_predict_raw
+    out_orig = inpainter.predict_raw_tta(images[:1], masks[:1])[0]
+    out_flipped = inpainter.predict_raw_tta(
+      images[:1, :, ::-1, :], masks[:1, :, ::-1, :]
+    )[0]
+    np.testing.assert_allclose(out_flipped, out_orig[:, ::-1, :], atol=1e-5)
+
+    with patch.object(sys, "argv", [sys.argv[0]]):
+      self.assertTrue(config.get_args(cli=True).tta)
+    with patch.object(sys, "argv", [sys.argv[0], "--no-tta"]):
+      self.assertFalse(config.get_args(cli=True).tta)
 
 
 if __name__ == "__main__":

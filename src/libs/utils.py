@@ -8,9 +8,60 @@ def image_to_array(image):
   return np.array(array / 255.0)
 
 
-def mask_pixels(image, mask_color):
+def absorb_mask_fringe(
+  image,
+  exact_mask,
+  mask_color,
+  *,
+  max_steps=2,
+  color_tolerance=24,
+  chroma_tolerance=40,
+):
+  """Expand an exact mask by up to ``max_steps`` 8-connected rings into anti-aliased fringe pixels."""
+  if not exact_mask.any() or max_steps <= 0:
+    return exact_mask
+
+  pixels = np.asarray(image, dtype=np.int16)
+  target = np.rint(mask_color).astype(np.int16)
+  near_exact = np.max(np.abs(pixels - target), axis=-1) <= color_tolerance
+
+  high = target >= 128
+  low = ~high
+  if high.any() and low.any() and (int(target.max()) - int(target.min()) >= 128):
+    high_min = pixels[..., high].min(axis=-1)
+    low_max = pixels[..., low].max(axis=-1)
+    fringe_candidate = near_exact | ((high_min - low_max) >= chroma_tolerance)
+  else:
+    fringe_candidate = near_exact
+
+  mask = exact_mask.copy()
+  height, width = mask.shape
+  for _ in range(max_steps):
+    dilated = mask.copy()
+    if height > 1:
+      dilated[:-1, :] |= mask[1:, :]
+      dilated[1:, :] |= mask[:-1, :]
+    if width > 1:
+      dilated[:, :-1] |= mask[:, 1:]
+      dilated[:, 1:] |= mask[:, :-1]
+    if height > 1 and width > 1:
+      dilated[:-1, :-1] |= mask[1:, 1:]
+      dilated[:-1, 1:] |= mask[1:, :-1]
+      dilated[1:, :-1] |= mask[:-1, 1:]
+      dilated[1:, 1:] |= mask[:-1, :-1]
+    grown = mask | (dilated & fringe_candidate)
+    if np.array_equal(grown, mask):
+      break
+    mask = grown
+  return mask
+
+
+def mask_pixels(image, mask_color, *, absorb_fringe=True):
   red, green, blue = np.asarray(image).transpose(2, 0, 1)
-  return (red == mask_color[0]) & (green == mask_color[1]) & (blue == mask_color[2])
+  exact = (red == mask_color[0]) & (green == mask_color[1]) & (blue == mask_color[2])
+  if absorb_fringe:
+    return absorb_mask_fringe(image, exact, mask_color)
+  return exact
 
 
 def find_regions(image, mask_color):
@@ -71,16 +122,40 @@ def prepare_crop(image, marked, box):
   size = 256
   scale = (size - 2 * edge_margin) / max(width, height)
   resized = max(1, round(width * scale)), max(1, round(height * scale))
-  rgb = image_to_array(image.crop(box).resize(resized, Image.Resampling.NEAREST))
-  if scale < 1:
-    # Average in float so even a single marked source pixel survives.
+  cropped = image.crop(box)
+
+  if resized == (width, height):
+    rgb = image_to_array(cropped)
+    missing = crop_mask.copy()
+  elif scale < 1:
+    # Average in float so even a single marked source pixel survives; BOX on RGB
+    # shares the same support, so unmasked pixels never bleed mask colors.
     mask = Image.fromarray(crop_mask.astype(np.float32)).resize(
       resized, Image.Resampling.BOX
     )
     missing = np.asarray(mask) > 0
+    rgb = image_to_array(cropped.resize(resized, Image.Resampling.BOX))
   else:
     mask = Image.fromarray(crop_mask).resize(resized, Image.Resampling.NEAREST)
     missing = np.asarray(mask)
+    rgb = image_to_array(cropped.resize(resized, Image.Resampling.NEAREST))
+    valid = (~crop_mask).astype(np.float32)
+    if valid.any():
+      src = np.asarray(cropped, dtype=np.float32) / 255.0
+      weight = np.asarray(
+        Image.fromarray(valid).resize(resized, Image.Resampling.BILINEAR)
+      )
+      channels = [
+        np.asarray(
+          Image.fromarray(src[..., c] * valid).resize(
+            resized, Image.Resampling.BILINEAR
+          )
+        )
+        for c in range(3)
+      ]
+      upscaled = np.stack(channels, axis=-1)
+      ok = (~missing) & (weight > 1e-6)
+      rgb[ok] = np.clip(upscaled[ok] / weight[ok, None], 0.0, 1.0)
 
   pad_x, pad_y = size - resized[0], size - resized[1]
   x0, y0 = pad_x // 2, pad_y // 2
@@ -92,13 +167,131 @@ def prepare_crop(image, marked, box):
   return rgb, missing, (slice(y0, y0 + resized[1]), slice(x0, x0 + resized[0]))
 
 
-def resize_prediction(prediction, size):
+def resize_prediction_float(prediction, size):
+  """Resize a ``[-1, 1]`` PEPSI prediction to ``size`` as ``float32`` in ``[0, 255]``."""
   channels = [
     np.asarray(Image.fromarray(channel).resize(size, Image.Resampling.BICUBIC))
     for channel in prediction.transpose(2, 0, 1)
   ]
-  rgb = (np.stack(channels, axis=-1) + 1) * 127.5
-  return np.rint(rgb.clip(0, 255)).astype(np.uint8)
+  rgb = (np.stack(channels, axis=-1) + 1.0) * 127.5
+  return rgb.clip(0.0, 255.0).astype(np.float32)
+
+
+def resize_prediction(prediction, size):
+  rgb = resize_prediction_float(prediction, size)
+  return np.rint(rgb).astype(np.uint8)
+
+
+def suppress_monochrome_chroma(
+  prediction,
+  source,
+  region_mask,
+  known_mask,
+  *,
+  p95_threshold=4.0,
+  p99_threshold=8.0,
+):
+  """Project restored pixels onto the monochrome luminance axis when context is achromatic."""
+  if not region_mask.any() or not known_mask.any():
+    return prediction
+
+  known_rgb = source[known_mask].astype(np.float32)
+  spread = known_rgb.max(axis=1) - known_rgb.min(axis=1)
+  if (
+    np.percentile(spread, 95) > p95_threshold
+    or np.percentile(spread, 99) > p99_threshold
+  ):
+    return prediction
+
+  luma_weights = np.array((0.299, 0.587, 0.114), dtype=np.float32)
+  known_y = known_rgb @ luma_weights
+  mean_tint = (known_rgb - known_y[:, None]).mean(axis=0)
+
+  out = prediction.copy()
+  pred_y = out[region_mask] @ luma_weights
+  out[region_mask] = np.clip(pred_y[:, None] + mean_tint, 0.0, 255.0)
+  return out
+
+
+def seamless_blend_region(
+  raw_prediction,
+  source,
+  region_mask,
+  known_mask,
+  *,
+  screening=0.015,
+  max_shift=28.0,
+  max_iters=160,
+  tol=0.05,
+):
+  """Reduce mask-boundary seams by solving a screened harmonic residual correction."""
+  if not region_mask.any() or not known_mask.any():
+    return raw_prediction
+
+  height, width = region_mask.shape
+  ys, xs = np.nonzero(region_mask)
+  y0 = max(0, int(ys.min()) - 1)
+  y1 = min(height, int(ys.max()) + 2)
+  x0 = max(0, int(xs.min()) - 1)
+  x1 = min(width, int(xs.max()) + 2)
+
+  inside = region_mask[y0:y1, x0:x1]
+  known = known_mask[y0:y1, x0:x1]
+  sub_h, sub_w = inside.shape
+
+  ring = np.zeros_like(inside)
+  if sub_h > 1:
+    ring[:-1, :] |= inside[1:, :]
+    ring[1:, :] |= inside[:-1, :]
+  if sub_w > 1:
+    ring[:, :-1] |= inside[:, 1:]
+    ring[:, 1:] |= inside[:, :-1]
+  ring &= known & ~inside
+  if not ring.any():
+    return raw_prediction
+
+  sub_raw = raw_prediction[y0:y1, x0:x1].astype(np.float32)
+  sub_src = source[y0:y1, x0:x1].astype(np.float32)
+  residual = np.zeros_like(sub_raw)
+  residual[ring] = np.clip(sub_src[ring] - sub_raw[ring], -max_shift, max_shift)
+
+  active = inside | ring
+  valid_nb = np.zeros((sub_h, sub_w), dtype=np.float32)
+  if sub_h > 1:
+    valid_nb[1:, :] += active[:-1, :]
+    valid_nb[:-1, :] += active[1:, :]
+  if sub_w > 1:
+    valid_nb[:, 1:] += active[:, :-1]
+    valid_nb[:, :-1] += active[:, 1:]
+  denom = (valid_nb + screening)[..., None]
+
+  delta = np.zeros((sub_h + 2, sub_w + 2, 3), dtype=np.float32)
+  cur = delta[1:-1, 1:-1]
+  cur[ring] = residual[ring]
+  cur[inside] = residual[ring].mean(axis=0)
+
+  yy, xx = np.indices((sub_h, sub_w))
+  red = inside & (((yy + xx) & 1) == 0)
+  black = inside & (((yy + xx) & 1) == 1)
+  omega = 1.65
+
+  for step in range(max_iters):
+    max_change = 0.0
+    check = step % 5 == 4
+    for color_mask in (red, black):
+      if not color_mask.any():
+        continue
+      nb_sum = delta[:-2, 1:-1] + delta[2:, 1:-1] + delta[1:-1, :-2] + delta[1:-1, 2:]
+      step_delta = omega * (nb_sum[color_mask] / denom[color_mask] - cur[color_mask])
+      cur[color_mask] += step_delta
+      if check:
+        max_change = max(max_change, float(np.max(np.abs(step_delta))))
+    if check and max_change < tol:
+      break
+
+  out = raw_prediction.copy()
+  out[y0:y1, x0:x1][inside] = np.clip(sub_raw[inside] + cur[inside], 0.0, 255.0)
+  return out
 
 
 def prepare_lama_crop(image, marked, box, max_size=512):
