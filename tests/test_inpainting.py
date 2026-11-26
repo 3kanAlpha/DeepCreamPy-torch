@@ -1,6 +1,7 @@
 import contextlib
 import io
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -11,14 +12,18 @@ from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+import config
+from convert_lama import convert_checkpoint
 from decensor import Decensor
+from lama import FFCResNetGenerator, infer_lama_config
 from libs.utils import (
   bridge_thin_gaps,
   connected_regions,
   expand_bounding,
   prepare_crop,
+  prepare_lama_crop,
 )
-from model import InpaintModel
+from model import InpaintModel, LamaInpainter, create_inpainter
 
 
 class RecordingModel:
@@ -117,6 +122,126 @@ class InpaintingTests(unittest.TestCase):
     self.assertTrue(torch.isfinite(filled).all().item())
     filled.sum().backward()
     self.assertTrue(torch.isfinite(features.grad).all().item())
+
+  def test_lama_big_lama_structure_and_gradient(self):
+    big_lama = FFCResNetGenerator()
+    state = big_lama.state_dict()
+    self.assertEqual(len(state), 989)
+    inferred = infer_lama_config(state)
+    self.assertEqual(
+      inferred,
+      {
+        "input_nc": 4,
+        "ngf": 64,
+        "n_downsampling": 3,
+        "n_blocks": 18,
+        "ratio_g": 0.75,
+        "enable_lfu": False,
+      },
+    )
+
+    small_lama = FFCResNetGenerator(ngf=16, n_blocks=2)
+    image = torch.rand(1, 3, 32, 40, requires_grad=True)
+    mask = torch.zeros(1, 1, 32, 40)
+    mask[:, :, 8:20, 10:26] = 1.0
+    output = small_lama(image, mask)
+    self.assertEqual(output.shape, image.shape)
+    self.assertTrue((output >= 0.0).all().item() and (output <= 1.0).all().item())
+    self.assertTrue(
+      torch.equal(
+        output[mask.expand_as(output) == 0], image[mask.expand_as(output) == 0]
+      )
+    )
+    output.sum().backward()
+    self.assertTrue(torch.isfinite(image.grad).all().item())
+
+  def test_prepare_lama_crop_padding_and_downscaling(self):
+    image = Image.new("RGB", (300, 220), (110, 95, 170))
+    marked = np.zeros((220, 300), dtype=bool)
+    marked[50:70, 80:110] = True
+    rgb, missing, unpadded = prepare_lama_crop(image, marked, (10, 10, 260, 200))
+    self.assertEqual(rgb.shape, (192, 256, 3))
+    self.assertEqual(missing.shape, (192, 256))
+    self.assertEqual(rgb[unpadded].shape, (190, 250, 3))
+
+    large = Image.new("RGB", (1000, 1000), (110, 95, 170))
+    large_marked = np.zeros((1000, 1000), dtype=bool)
+    large_marked[300:701, 500] = True
+    rgb_large, missing_large, unpadded_large = prepare_lama_crop(
+      large, large_marked, (0, 0, 1000, 1000), max_size=512
+    )
+    self.assertEqual(rgb_large.shape, (512, 512, 3))
+    self.assertTrue(missing_large[unpadded_large].any())
+
+    tiny = Image.new("RGB", (1, 1), (10, 20, 30))
+    tiny_marked = np.ones((1, 1), dtype=bool)
+    rgb_tiny, missing_tiny, unpadded_tiny = prepare_lama_crop(
+      tiny, tiny_marked, (0, 0, 1, 1)
+    )
+    self.assertEqual(rgb_tiny.shape, (8, 8, 3))
+    self.assertEqual(rgb_tiny[unpadded_tiny].shape, (1, 1, 3))
+    self.assertTrue(missing_tiny[unpadded_tiny].all())
+
+  def test_lama_conversion_and_decensor_integration(self):
+    with tempfile.TemporaryDirectory() as directory:
+      root = Path(directory)
+      source_ckpt = root / "source.ckpt"
+      converted = root / "inpaint.pt"
+      net = FFCResNetGenerator(ngf=16, n_blocks=2)
+      torch.save(
+        {"state_dict": {f"generator.{k}": v for k, v in net.state_dict().items()}},
+        source_ckpt,
+      )
+      info = convert_checkpoint(source_ckpt, converted)
+      self.assertEqual(info["n_blocks"], 2)
+      self.assertEqual(info["ngf"], 16)
+
+      # Also verify Lightning-like checkpoints referencing missing external modules.
+      fake_cls = type("FakeCallback", (), {"__module__": "nonexistent_lightning"})
+      fake_mod = type("M", (), {"FakeCallback": fake_cls})()
+      lightning_ckpt = root / "lightning.ckpt"
+      with patch.dict(sys.modules, {"nonexistent_lightning": fake_mod}):
+        torch.save(
+          {
+            "callbacks": [fake_cls()],
+            "state_dict": {f"generator.{k}": v for k, v in net.state_dict().items()},
+          },
+          lightning_ckpt,
+        )
+      converted_lightning = root / "inpaint_lightning.pt"
+      info_lightning = convert_checkpoint(lightning_ckpt, converted_lightning)
+      self.assertEqual(info_lightning["n_blocks"], 2)
+
+      pixels = np.full((120, 120, 4), (70, 80, 90, 200), dtype=np.uint8)
+      marked = np.zeros((120, 120), dtype=bool)
+      marked[40:52, 45:65] = True
+      marked_pixels = pixels.copy()
+      marked_pixels[marked, :3] = (0, 255, 0)
+      marked_image = Image.fromarray(marked_pixels)
+
+      with patch.object(sys, "argv", [sys.argv[0], "--model", "lama"]):
+        decensor = Decensor(cli=True)
+      decensor.model = LamaInpainter(weights_path=converted)
+      with contextlib.redirect_stdout(io.StringIO()):
+        result = np.asarray(
+          decensor.decensor_image_variation(marked_image, marked_image, 0, None)
+        )
+      np.testing.assert_array_equal(result[~marked], pixels[~marked])
+      np.testing.assert_array_equal(result[..., 3], pixels[..., 3])
+
+  def test_lama_rejected_in_mosaic_mode(self):
+    with self.assertRaisesRegex(ValueError, "bar mode"):
+      create_inpainter("lama", is_mosaic=True)
+
+    with (
+      patch.object(
+        sys, "argv", [sys.argv[0], "--model", "lama", "--is_mosaic", "true"]
+      ),
+      contextlib.redirect_stderr(io.StringIO()),
+    ):
+      with self.assertRaises(SystemExit) as ctx:
+        config.get_args(cli=True)
+      self.assertEqual(ctx.exception.code, 2)
 
 
 if __name__ == "__main__":

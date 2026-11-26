@@ -101,6 +101,99 @@ def resize_prediction(prediction, size):
   return np.rint(rgb.clip(0, 255)).astype(np.uint8)
 
 
+def prepare_lama_crop(image, marked, box, max_size=512):
+  """Prepare a ``[0, 1]`` RGB crop and boolean missing mask padded to a multiple of 8."""
+  left, top, right, bottom = box
+  width, height = right - left, bottom - top
+  crop_mask = marked[top:bottom, left:right]
+
+  if max(width, height) > max_size:
+    scale = max_size / max(width, height)
+    resized = max(1, round(width * scale)), max(1, round(height * scale))
+    rgb = (
+      np.asarray(
+        image.crop(box).resize(resized, Image.Resampling.LANCZOS),
+        dtype=np.float32,
+      )
+      / 255.0
+    )
+    mask = Image.fromarray(crop_mask.astype(np.float32)).resize(
+      resized, Image.Resampling.BOX
+    )
+    missing = np.asarray(mask) > 0
+  else:
+    resized = (width, height)
+    rgb = np.asarray(image.crop(box), dtype=np.float32) / 255.0
+    missing = crop_mask.copy()
+
+  pad_x = (8 - resized[0] % 8) % 8
+  pad_y = (8 - resized[1] % 8) % 8
+  if pad_x or pad_y:
+    padding = ((0, pad_y), (0, pad_x))
+    mode = "reflect" if min(resized) > 1 else "edge"
+    rgb = np.pad(rgb, (*padding, (0, 0)), mode=mode)
+    missing = np.pad(missing, padding, mode=mode)
+
+  return rgb, missing, (slice(0, resized[1]), slice(0, resized[0]))
+
+
+def resize_lama_prediction(prediction, size):
+  """Convert a ``[0, 1]`` unpadded LaMa prediction back to ``uint8`` at ``size``."""
+  if (prediction.shape[1], prediction.shape[0]) != size:
+    channels = [
+      np.asarray(Image.fromarray(channel).resize(size, Image.Resampling.BICUBIC))
+      for channel in prediction.transpose(2, 0, 1)
+    ]
+    prediction = np.stack(channels, axis=-1)
+  rgb = prediction * 255.0
+  return np.rint(rgb.clip(0, 255)).astype(np.uint8)
+
+
+def prepare_lama_training_crop(image, marked, box, size=512):
+  """Prepare a fixed ``size x size`` ``[0, 1]`` RGB crop and missing mask for LaMa training."""
+  left, top, right, bottom = box
+  width, height = right - left, bottom - top
+  crop_mask = marked[top:bottom, left:right]
+  scale = size / max(width, height)
+  resized = max(1, round(width * scale)), max(1, round(height * scale))
+
+  if resized == (width, height):
+    rgb = np.asarray(image.crop(box), dtype=np.float32) / 255.0
+    missing = crop_mask.copy()
+  elif scale < 1:
+    rgb = (
+      np.asarray(
+        image.crop(box).resize(resized, Image.Resampling.LANCZOS),
+        dtype=np.float32,
+      )
+      / 255.0
+    )
+    mask = Image.fromarray(crop_mask.astype(np.float32)).resize(
+      resized, Image.Resampling.BOX
+    )
+    missing = np.asarray(mask) > 0
+  else:
+    rgb = (
+      np.asarray(
+        image.crop(box).resize(resized, Image.Resampling.BICUBIC),
+        dtype=np.float32,
+      )
+      / 255.0
+    )
+    mask = Image.fromarray(crop_mask).resize(resized, Image.Resampling.NEAREST)
+    missing = np.asarray(mask)
+
+  pad_x, pad_y = size - resized[0], size - resized[1]
+  x0, y0 = pad_x // 2, pad_y // 2
+  if pad_x or pad_y:
+    padding = ((y0, pad_y - y0), (x0, pad_x - x0))
+    mode = "reflect" if min(resized) > 1 else "edge"
+    rgb = np.pad(rgb, (*padding, (0, 0)), mode=mode)
+    missing = np.pad(missing, padding, mode=mode)
+
+  return rgb, missing, (slice(y0, y0 + resized[1]), slice(x0, x0 + resized[0]))
+
+
 def bridge_thin_gaps(original, marked, output):
   y, x = np.nonzero(marked)
   height, width = marked.shape

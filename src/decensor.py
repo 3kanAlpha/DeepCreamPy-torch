@@ -2,6 +2,7 @@ import os
 import sys
 
 import numpy as np
+import torch
 from PIL import Image
 from PySide6 import QtCore
 
@@ -15,7 +16,7 @@ from libs.utils import (
   prepare_crop,
   resize_prediction,
 )
-from model import InpaintNN
+from model import create_inpainter
 
 """
 to allow decensoring in CLI, ignore all methods targeting Qt signals,
@@ -43,6 +44,7 @@ class Decensor(QtCore.QThread):
   ):
     super().__init__(parentThread)
     args = config.get_args(cli=cli)
+    self.model_name = args.model
     self.is_mosaic = args.is_mosaic
     self.bar_weights = args.bar_weights
     self.variations = args.variations
@@ -59,7 +61,7 @@ class Decensor(QtCore.QThread):
     self.signals = IgnoreAll()  # Signals class will be given by progressWindow
 
     self.model = None
-    self.loaded_mode = None
+    self.loaded_config = None
     self.load_only = False
 
     # if ui_mode is not None:
@@ -93,15 +95,23 @@ class Decensor(QtCore.QThread):
     self.clean_up_input_dirs = value
 
   def load_model(self):
-    if self.model is not None and self.loaded_mode == self.is_mosaic:
+    config_key = (self.model_name, self.is_mosaic, self.bar_weights)
+    if self.model is not None and self.loaded_config == config_key:
       return
 
+    if self.model is not None:
+      self.model = None
+      self.loaded_config = None
+      if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
     self.signals.insertText_progressCursor.emit("Loading model ... please wait ...\n")
-    self.model = InpaintNN(is_mosaic=self.is_mosaic, weights_path=self.bar_weights)
-    self.loaded_mode = self.is_mosaic
-    message = (
-      f"Loaded {'mosaic' if self.is_mosaic else 'bar'} model on {self.model.device}"
+    self.model = create_inpainter(
+      self.model_name, is_mosaic=self.is_mosaic, weights_path=self.bar_weights
     )
+    self.loaded_config = config_key
+    mode = "mosaic" if self.is_mosaic else "bar"
+    message = f"Loaded {self.model_name} ({mode}) model on {self.model.device}"
     if self.bar_weights is not None:
       message += f" from {self.bar_weights}"
     if self.model.fallback_reason:
@@ -273,31 +283,41 @@ class Decensor(QtCore.QThread):
     while completed < len(regions):
       batch = regions[completed : completed + self.model.batch_size]
       boxes = []
-      prediction_slices = []
-      crops = []
-      masks = []
       for region_counter, region in enumerate(batch, completed + 1):
         self.signals.insertText_progressCursor.emit(
           f"Decensoring regions in image, Decensoring censor {region_counter}/{len(regions)}"
         )
-        box = expand_bounding(ori, region)
-        boxes.append(box)
-        crop, missing, prediction_slice = prepare_crop(ori, marked, box)
-        prediction_slices.append(prediction_slice)
-        if not self.is_mosaic:
-          crop[missing] = 0
-        crops.append(crop)
-        masks.append(np.repeat((~missing)[..., None], 3, axis=-1))
+        boxes.append(expand_bounding(ori, region))
 
-      images = np.stack(crops) * 2.0 - 1
-      predictions = self.model.predict(images, images, np.stack(masks))
-      for region, box, prediction_slice, prediction in zip(
-        batch, boxes, prediction_slices, predictions, strict=True
-      ):
-        left, top, right, bottom = box
-        pred_array = resize_prediction(
-          prediction[prediction_slice], (right - left, bottom - top)
+      if hasattr(self.model, "inpaint_crops"):
+        pred_arrays = self.model.inpaint_crops(
+          ori, marked, boxes, is_mosaic=self.is_mosaic
         )
+      else:
+        prediction_slices = []
+        crops = []
+        masks = []
+        for box in boxes:
+          crop, missing, prediction_slice = prepare_crop(ori, marked, box)
+          prediction_slices.append(prediction_slice)
+          if not self.is_mosaic:
+            crop[missing] = 0
+          crops.append(crop)
+          masks.append(np.repeat((~missing)[..., None], 3, axis=-1))
+
+        images = np.stack(crops) * 2.0 - 1
+        predictions = self.model.predict(images, images, np.stack(masks))
+        pred_arrays = [
+          resize_prediction(
+            prediction[prediction_slice], (box[2] - box[0], box[3] - box[1])
+          )
+          for box, prediction_slice, prediction in zip(
+            boxes, prediction_slices, predictions, strict=True
+          )
+        ]
+
+      for region, box, pred_array in zip(batch, boxes, pred_arrays, strict=True):
+        left, top, _, _ = box
         x, y = np.asarray(list(region)).T
         output_img_array[y, x] = pred_array[y - top, x - left]
 

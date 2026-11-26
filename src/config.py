@@ -65,6 +65,12 @@ def get_args(*, cli=False):
     "--mask_color_blue", default=0, help="blue channel of mask color in decensoring"
   )
   parser.add_argument(
+    "--model",
+    choices=("pepsi", "lama"),
+    default="pepsi",
+    help="inpainting model architecture to use (pepsi or lama)",
+  )
+  parser.add_argument(
     "--is_mosaic",
     type=str2bool,
     default="False",
@@ -93,6 +99,8 @@ def get_args(*, cli=False):
   )
 
   args = parser.parse_args()
+  if args.model == "lama" and args.is_mosaic:
+    parser.error("--model lama can only be used in bar mode")
   if args.bar_weights is not None and args.is_mosaic:
     parser.error("--bar-weights can only be used in bar mode")
   return args

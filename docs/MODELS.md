@@ -38,3 +38,17 @@ The forward pass combines the decoded RGB with the source crop using `prediction
 The original TensorFlow graph uses a shared encoder and two passes through a shared decoder. The coarse pass decodes the encoder features directly and supplies an auxiliary L1 reconstruction loss. The inpainting pass decodes the features refined by contextual attention and uses both L1 reconstruction and an adversarial loss from the Region Ensemble Discriminator (RED). [DeepCreamPy 2.2.0 Beta TensorFlow graph](https://github.com/Deepshift/DeepCreamPy/blob/2.2.0-beta/model.py) · [PEPSI paper, Section 3](https://openaccess.thecvf.com/content_CVPR_2019/papers/Sagong_PEPSI__Fast_Image_Inpainting_With_Parallel_Decoding_Network_CVPR_2019_paper.pdf)
 
 The conversion script reads the pretrained TensorFlow encoder (`G_en`), context projection (`CB1/ML`), and decoder (`G_de`) weights and biases. It rearranges convolution kernels from TensorFlow's height × width × input channels × output channels layout to PyTorch's output channels × input channels × height × width layout and saves one state dictionary per mode. [Conversion script](../src/convert_models.py) · [Model setup](INSTALLATION.md#prepare-the-models)
+
+## LaMa model (bar mode only)
+
+In bar mode, you can also select a pure PyTorch implementation of **LaMa (`FFCResNetGenerator`)** built with Fast Fourier Convolutions (FFCs). [LaMa implementation](../src/lama.py) · [LaMa paper (Suvorov et al., WACV 2022)](https://arxiv.org/abs/2109.07161)
+
+* **Checkpoint**: Loads `models/lama/inpaint.pt` by default (or a custom file via `--bar-weights`). Both Big-LaMa (18 FFC blocks, ~51M parameters) and standard LaMa (9 blocks, ~27M parameters) are inferred automatically from the state dictionary.
+* **Preprocessing**: Crops larger than 512 px on the long side are downscaled with `LANCZOS` (crops at or below 512 px are not upscaled) and reflection-padded to multiples of 8 alongside the mask. The generator receives 4 channels: `[0, 1]` RGB with masked pixels zeroed out, concatenated with a 1-channel mask where `1` marks pixels to fill and `0` marks pixels to keep. [LaMa crop preparation](../src/libs/utils.py) · [LaMa runner](../src/model.py)
+* **Weight conversion**: Existing pretrained checkpoints (TorchScript `.pt`, PyTorch/Lightning `.ckpt`, or `.safetensors`) can be converted to `models/lama/inpaint.pt` with the conversion helper. [LaMa converter](../src/convert_lama.py)
+
+```powershell
+uv run --locked python src/convert_lama.py path/to/big-lama.pt
+```
+
+For `.safetensors`, pass `--with safetensors`. Select LaMa from the CLI with `--model lama` or in the GUI under the **Model** group (disabled when mosaic mode is selected).

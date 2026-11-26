@@ -60,15 +60,28 @@ class MainWindow(QWidget):
     # Censor type group
     self.censorTypeGroupBox = QGroupBox("Censor Type")
 
-    barButton = QRadioButton("Bar censor")
-    mosaicButton = QRadioButton("Mosaic censor")
-    barButton.setChecked(True)
+    self.barButton = QRadioButton("Bar censor")
+    self.mosaicButton = QRadioButton("Mosaic censor")
+    self.barButton.setChecked(True)
+    self.mosaicButton.toggled.connect(self.updateModelAvailability)
 
     censorLayout = QVBoxLayout()
-    censorLayout.addWidget(barButton)
-    censorLayout.addWidget(mosaicButton)
-    # censorLayout.addStretch(1)
+    censorLayout.addWidget(self.barButton)
+    censorLayout.addWidget(self.mosaicButton)
     self.censorTypeGroupBox.setLayout(censorLayout)
+
+    # Model group
+    self.modelGroupBox = QGroupBox("Model")
+
+    self.pepsiModelButton = QRadioButton("PEPSI (default)")
+    self.lamaModelButton = QRadioButton("LaMa (Bar only)")
+    self.lamaModelButton.setToolTip("LaMa is available in Bar censor mode only.")
+    self.pepsiModelButton.setChecked(True)
+
+    modelLayout = QVBoxLayout()
+    modelLayout.addWidget(self.pepsiModelButton)
+    modelLayout.addWidget(self.lamaModelButton)
+    self.modelGroupBox.setLayout(modelLayout)
 
     # Variation count group
     self.variationsGroupBox = QGroupBox("Number of Decensor Variations")
@@ -120,18 +133,19 @@ class MainWindow(QWidget):
 
     # put all groups into grid
     # addWidget(row, column, rowSpan, columnSpan)
-    grid_layout.addWidget(self.tutorialLabel, 0, 0, 1, 2)
+    grid_layout.addWidget(self.tutorialLabel, 0, 0, 1, 3)
     grid_layout.addWidget(self.censorTypeGroupBox, 1, 0, 1, 1)
-    grid_layout.addWidget(self.variationsGroupBox, 1, 1, 1, 1)
-    grid_layout.addWidget(self.cleanInputDirectoryCheckbox, 2, 0, 1, 2)
-    grid_layout.addWidget(self.decensorButton, 3, 0, 1, 2)
-    grid_layout.addWidget(self.progressMessage, 4, 0, 1, 2)
-    grid_layout.addWidget(self.statusBar, 5, 0, 1, 2)
+    grid_layout.addWidget(self.modelGroupBox, 1, 1, 1, 1)
+    grid_layout.addWidget(self.variationsGroupBox, 1, 2, 1, 1)
+    grid_layout.addWidget(self.cleanInputDirectoryCheckbox, 2, 0, 1, 3)
+    grid_layout.addWidget(self.decensorButton, 3, 0, 1, 3)
+    grid_layout.addWidget(self.progressMessage, 4, 0, 1, 3)
+    grid_layout.addWidget(self.statusBar, 5, 0, 1, 3)
 
     # window size settings
     self.resize(900, 600)
     self.center()
-    self.setWindowTitle("DeepCreamPy v3.0.0-Unofficial")
+    self.setWindowTitle("DeepCreamPy v3.1.0-Unofficial")
     self.show()
 
   def load_model(self):
@@ -157,28 +171,22 @@ class MainWindow(QWidget):
       self.decensor.set_clean_up_input_dirs
     )
 
+  def updateModelAvailability(self, is_mosaic):
+    self.lamaModelButton.setEnabled(not is_mosaic)
+    if is_mosaic and self.lamaModelButton.isChecked():
+      self.pepsiModelButton.setChecked(True)
+
   def decensorClicked(self):
     self.decensorButton.setEnabled(False)
     self.progressMessage.clear()
     self.progressCursor.insertText("Decensoring has begun!\n")
 
-    # for now, decensor is initiated when this app is started
-    # self.decensor = Decensor(text_edit = self.progressMessage, text_cursor = self.progressCursor, ui_mode = True)
-
-    # https://stackoverflow.com/questions/42349470/pyqt-find-checked-radiobutton-in-a-group
-    # set decensor to right settings
-    # censor type
-    censorTypeElements = self.censorTypeGroupBox.children()
-    censorButtons = [
-      elem for elem in censorTypeElements if isinstance(elem, QRadioButton)
-    ]
-    for cb in censorButtons:
-      if cb.isChecked():
-        censorType = cb.text()
-    if censorType == "Bar censor":
-      self.decensor.is_mosaic = False
-    else:
-      self.decensor.is_mosaic = True
+    self.decensor.is_mosaic = self.mosaicButton.isChecked()
+    self.decensor.model_name = (
+      "lama"
+      if self.lamaModelButton.isChecked() and not self.decensor.is_mosaic
+      else "pepsi"
+    )
 
     # variations count
     variationsElements = self.variationsGroupBox.children()

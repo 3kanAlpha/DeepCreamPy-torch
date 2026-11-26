@@ -56,3 +56,17 @@ uv run --locked python src/decensor.py --bar-weights models/bar/runs/my-bar/inpa
 ```
 
 復元した画像は `decensor_output` に保存されます。
+
+## 4. LaMa モデルで学習・ファインチューニングする
+
+`--model lama` を指定すると、PEPSI の代わりに LaMa (`FFCResNetGenerator`) を学習できます。LaMa の既定クロップサイズは **512 × 512** です（`--crop-size 256` のように 8 の倍数で変更可能）。
+
+変換済みの事前学習済み重み（`models/lama/inpaint.pt` など）からファインチューニングし、軽量 PatchGAN の敵対的損失＋Feature Matching 損失を有効にする例です。
+
+```powershell
+uv run --locked python src/train_bar.py --model lama --init-weights models/lama/inpaint.pt --adv-weight 0.01 --fm-weight 0.1 --images dataset/images --annotations dataset/people.csv --output models/lama/runs/my-lama --epochs 20
+```
+
+* `--init-weights` 指定かつ `--batch-size 1` のときは、`BatchNorm2d` の統計が崩れないよう既定で BN を凍結（`eval` 固定）します（明示制御は `--freeze-bn` / `--no-freeze-bn`）。
+* `--adv-weight 0`（既定）のときは L1 損失のみで学習します。PatchGAN を有効にした場合も `last.pt` に識別器の状態が保存されるため、そのまま `--resume` できます。
+* 学習した重みは CLI で `--model lama --bar-weights models/lama/runs/my-lama/inpaint.pt` を指定して使用します。

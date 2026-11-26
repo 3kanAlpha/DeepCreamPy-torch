@@ -38,3 +38,17 @@ Attention モジュールは、まずマスクの 1 チャンネル目を最近�
 オリジナルの TensorFlow 計算グラフでは、共有エンコーダ 1 つに対し、共有デコーダを 2 つの経路（パス）で通す構成になっています。1 つ目の粗い再構成パス（coarse pass）はエンコーダの特徴をそのままデコードし、補助的な L1 再構成損失を算出します。2 つ目のインペインティングパス（inpainting pass）は Contextual Attention で精緻化した特徴をデコードし、L1 再構成損失に加えて Region Ensemble Discriminator (RED) による敵対的損失（adversarial loss）を使用します。[DeepCreamPy 2.2.0 Beta の TensorFlow グラフ](https://github.com/Deepshift/DeepCreamPy/blob/2.2.0-beta/model.py) · [PEPSI 論文 Section 3](https://openaccess.thecvf.com/content_CVPR_2019/papers/Sagong_PEPSI__Fast_Image_Inpainting_With_Parallel_Decoding_Network_CVPR_2019_paper.pdf)
 
 変換スクリプトは、学習済み TensorFlow モデルからエンコーダ（`G_en`）、コンテキスト射影（`CB1/ML`）、デコーダ（`G_de`）の重みとバイアスを読み込みます。そして、畳み込みカーネルの軸配列を TensorFlow 形式（高さ × 幅 × 入力チャンネル × 出力チャンネル）から PyTorch 形式（出力チャンネル × 入力チャンネル × 高さ × 幅）へと並べ替え、モードごとに 1 つの state dict として保存します。[変換スクリプト](../src/convert_models.py) · [モデルのセットアップ](INSTALLATION.md#prepare-the-models)
+
+## LaMa モデル（バーモード専用）
+
+バーモードでは、PEPSI に加えて Fast Fourier Convolutions (FFC) を用いた Pure PyTorch 実装の **LaMa (`FFCResNetGenerator`)** を選択できます。[LaMa 実装](../src/lama.py) · [LaMa 論文 (Suvorov et al., WACV 2022)](https://arxiv.org/abs/2109.07161)
+
+* **チェックポイント**: 既定では `models/lama/inpaint.pt` を読み込みます（CLI の `--bar-weights` で別ファイルも指定可）。Big-LaMa（18 ブロック、約 51M パラメータ）および標準 LaMa（9 ブロック、約 27M パラメータ）のどちらの構成も `state_dict` から自動判別します。
+* **前処理**: クロップの長辺が 512 px を超える場合のみ縦横比を保って `LANCZOS` 縮小し（512 px 以下は拡大しない）、画像とマスクを反射パディングで 8 の倍数に揃えます。入力は `[0, 1]` に正規化した RGB（マスク内は 0 埋め）と、`1 = 補完対象, 0 = 保持` の 1 チャンネルマスクを結合した 4 チャンネルです。[LaMa クロップ処理](../src/libs/utils.py) · [LaMa 推論ラッパー](../src/model.py)
+* **重みの変換**: 既存の学習済みチェックポイント（TorchScript `.pt`、PyTorch Lightning `.ckpt`、`.safetensors`）は変換スクリプトで `models/lama/inpaint.pt` に変換できます。[LaMa 変換スクリプト](../src/convert_lama.py)
+
+```powershell
+uv run --locked python src/convert_lama.py path/to/big-lama.pt
+```
+
+`.safetensors` を変換する場合は `--with safetensors` を付けて実行します。CLI での実行は `--model lama` を指定してください。GUI では「Model」グループから `LaMa (Bar only)` を選択できます（Mosaic モード選択時は無効化されます）。
