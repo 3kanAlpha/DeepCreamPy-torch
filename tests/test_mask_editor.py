@@ -292,34 +292,68 @@ class MaskEditorGuiTests(unittest.TestCase):
     editor.close()
 
   def test_main_window_two_way_settings_sync_and_mosaic_tool_switch(self):
+    import model
+
     with (
       patch.object(MainWindow, "load_model", lambda self: None),
       patch.object(sys, "argv", [sys.argv[0]]),
+      patch.object(model, "LAMA_WEIGHTS_PATH", Path(__file__)),
     ):
       win = MainWindow()
-    win.openMaskEditor()
-    editor = win.maskEditorWindow
-    self.assertIsNotNone(editor)
-    self.assertEqual(editor.canvas.tool, TOOL_AUTO_DETECT)
+      win.openMaskEditor()
+      editor = win.maskEditorWindow
+      self.assertIsNotNone(editor)
+      self.assertEqual(editor.canvas.tool, TOOL_AUTO_DETECT)
+      self.assertTrue(win.lamaModelButton.isEnabled())
+      self.assertTrue(editor.lamaRadio.isEnabled())
 
-    # Switch to Mosaic in MainWindow -> syncs to editor & switches tool to Rect Fill
-    win.mosaicButton.setChecked(True)
-    self.assertTrue(editor.mosaicRadio.isChecked())
-    self.assertFalse(editor.lamaRadio.isEnabled())
-    self.assertEqual(editor.canvas.tool, TOOL_RECT_FILL)
+      # Switch to Mosaic in MainWindow -> syncs to editor & switches tool to Rect Fill
+      win.mosaicButton.setChecked(True)
+      self.assertTrue(editor.mosaicRadio.isChecked())
+      self.assertFalse(editor.lamaRadio.isEnabled())
+      self.assertEqual(editor.canvas.tool, TOOL_RECT_FILL)
 
-    # Switch back to Bar + LaMa + 4 variations in Editor -> syncs back to MainWindow
-    editor.barRadio.setChecked(True)
-    self.assertEqual(editor.canvas.tool, TOOL_AUTO_DETECT)
-    editor.lamaRadio.setChecked(True)
-    editor.variationsCombo.setCurrentText("4")
+      # Switch back to Bar + LaMa + 4 variations in Editor -> syncs back to MainWindow
+      editor.barRadio.setChecked(True)
+      self.assertEqual(editor.canvas.tool, TOOL_AUTO_DETECT)
+      editor.lamaRadio.setChecked(True)
+      editor.variationsCombo.setCurrentText("4")
 
-    self.assertTrue(win.barButton.isChecked())
-    self.assertTrue(win.lamaModelButton.isChecked())
-    self.assertFalse(win.ttaCheckbox.isEnabled())
-    self.assertEqual(win.get_decensor_settings()["variations"], 4)
+      self.assertTrue(win.barButton.isChecked())
+      self.assertTrue(win.lamaModelButton.isChecked())
+      self.assertFalse(win.ttaCheckbox.isEnabled())
+      self.assertEqual(win.get_decensor_settings()["variations"], 4)
 
-    win.close()
+      win.close()
+
+  def test_lama_disabled_with_guidance_when_weights_missing(self):
+    import model
+
+    missing_weights = Path(__file__).parent / "nonexistent_lama_inpaint.pt"
+    with (
+      patch.object(MainWindow, "load_model", lambda self: None),
+      patch.object(sys, "argv", [sys.argv[0]]),
+      patch.object(model, "LAMA_WEIGHTS_PATH", missing_weights),
+    ):
+      win = MainWindow()
+      self.assertFalse(win.lamaModelButton.isEnabled())
+      self.assertIn(str(missing_weights), win.lamaModelButton.toolTip())
+
+      win.openMaskEditor()
+      editor = win.maskEditorWindow
+      self.assertIsNotNone(editor)
+      self.assertFalse(editor.lamaRadio.isEnabled())
+      self.assertIn(str(missing_weights), editor.lamaRadio.toolTip())
+
+      # Toggling Mosaic -> Bar must keep LaMa disabled while weights are absent
+      win.mosaicButton.setChecked(True)
+      win.barButton.setChecked(True)
+      self.assertFalse(win.lamaModelButton.isEnabled())
+      self.assertFalse(editor.lamaRadio.isEnabled())
+      self.assertEqual(win.get_decensor_settings()["model_name"], "pepsi")
+      self.assertEqual(editor.get_decensor_settings()["model_name"], "pepsi")
+
+      win.close()
 
 
 if __name__ == "__main__":

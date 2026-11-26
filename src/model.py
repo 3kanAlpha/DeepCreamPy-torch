@@ -16,13 +16,38 @@ from libs.utils import (
   suppress_monochrome_chroma,
 )
 
+
+def _app_root():
+  if getattr(sys, "frozen", False):
+    return Path(sys.executable).resolve().parent
+  return Path(__file__).resolve().parent.parent
+
+
 ROOT = Path(__file__).resolve().parent
 if not getattr(sys, "frozen", False):
   ROOT = ROOT.parent
 MODELS_DIR = ROOT / "models"
 WEIGHTS_NAME = "inpaint.pt"
-LAMA_WEIGHTS_PATH = MODELS_DIR / "lama" / WEIGHTS_NAME
+LAMA_WEIGHTS_PATH = _app_root() / "models" / "lama" / WEIGHTS_NAME
 MODEL_CHOICES = ("pepsi", "lama")
+
+
+def lama_weights_available(path=None):
+  target = LAMA_WEIGHTS_PATH if path is None else Path(path)
+  return target.is_file()
+
+
+def lama_radio_tooltip(available=None):
+  if available is None:
+    available = lama_weights_available()
+  if available:
+    return "LaMa is available in Bar censor mode only."
+  return (
+    "LaMa model not found. Place a converted inpaint.pt at "
+    f"{LAMA_WEIGHTS_PATH} to enable LaMa."
+  )
+
+
 # (horizontal_flip, dy, dx) in 256x256 input space
 PEPSI_TTA_VIEWS = (
   (False, 0, 0),
@@ -316,6 +341,11 @@ class LamaInpainter:
     if not path.is_file():
       if weights_path is not None:
         raise FileNotFoundError(f"Missing weights file: {path}")
+      if getattr(sys, "frozen", False):
+        raise FileNotFoundError(
+          f"Missing {path}. Place a converted LaMa state_dict (inpaint.pt) "
+          f"at {path} to enable LaMa."
+        )
       raise FileNotFoundError(
         f"Missing {path}. Convert a LaMa checkpoint with src/convert_lama.py "
         "or pass --bar-weights."

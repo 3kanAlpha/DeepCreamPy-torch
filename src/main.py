@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
 
 from decensor import Decensor
 from mask_editor import MaskEditorWindow
+from model import lama_radio_tooltip, lama_weights_available
 from signals import Signals
 
 # from decensor import Decensor
@@ -82,8 +83,8 @@ class MainWindow(QWidget):
 
     self.pepsiModelButton = QRadioButton("PEPSI (default)")
     self.lamaModelButton = QRadioButton("LaMa (Bar only)")
-    self.lamaModelButton.setToolTip("LaMa is available in Bar censor mode only.")
     self.pepsiModelButton.setChecked(True)
+    self._refresh_lama_availability(is_mosaic=False)
     self.ttaCheckbox = QCheckBox("Use TTA (flip + shift)")
     self.ttaCheckbox.setChecked(True)
     self.ttaCheckbox.setToolTip(
@@ -224,16 +225,28 @@ class MainWindow(QWidget):
     if self.maskEditorWindow is not None:
       self.maskEditorWindow.set_progress_range(minimum, self.progressBar.maximum())
 
-  def updateModelAvailability(self, is_mosaic):
-    self.lamaModelButton.setEnabled(not is_mosaic)
-    if is_mosaic and self.lamaModelButton.isChecked():
+  def _refresh_lama_availability(self, is_mosaic=None):
+    if is_mosaic is None:
+      is_mosaic = self.mosaicButton.isChecked()
+    available = lama_weights_available()
+    self.lamaModelButton.setEnabled(available and not is_mosaic)
+    self.lamaModelButton.setToolTip(lama_radio_tooltip(available))
+    if (is_mosaic or not available) and self.lamaModelButton.isChecked():
       self.pepsiModelButton.setChecked(True)
+    return available
+
+  def updateModelAvailability(self, is_mosaic):
+    self._refresh_lama_availability(is_mosaic=is_mosaic)
     self._emit_settings_to_editor()
 
   def get_decensor_settings(self):
     is_mosaic = self.mosaicButton.isChecked()
     model_name = (
-      "lama" if self.lamaModelButton.isChecked() and not is_mosaic else "pepsi"
+      "lama"
+      if self.lamaModelButton.isEnabled()
+      and self.lamaModelButton.isChecked()
+      and not is_mosaic
+      else "pepsi"
     )
     variations = 1
     for vb in self.variationButtons:
@@ -262,8 +275,8 @@ class MainWindow(QWidget):
 
       self.mosaicButton.setChecked(is_mosaic)
       self.barButton.setChecked(not is_mosaic)
-      self.lamaModelButton.setEnabled(not is_mosaic)
-      if is_mosaic and model_name == "lama":
+      available = self._refresh_lama_availability(is_mosaic=is_mosaic)
+      if (is_mosaic or not available) and model_name == "lama":
         model_name = "pepsi"
       self.lamaModelButton.setChecked(model_name == "lama")
       self.pepsiModelButton.setChecked(model_name != "lama")

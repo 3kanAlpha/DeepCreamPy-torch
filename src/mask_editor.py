@@ -44,6 +44,7 @@ from mask_detect import (
   clamp_rect,
   detect_censor_in_rect,
 )
+from model import lama_radio_tooltip, lama_weights_available
 
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 IMAGE_FILE_FILTER = (
@@ -1080,9 +1081,23 @@ class MaskEditorWindow(QWidget):
 
   # --- Settings sync ---
 
+  def _refresh_lama_availability(self, is_mosaic: bool | None = None) -> bool:
+    if is_mosaic is None:
+      is_mosaic = self.mosaicRadio.isChecked()
+    available = lama_weights_available()
+    self.lamaRadio.setEnabled(available and not is_mosaic)
+    self.lamaRadio.setToolTip(lama_radio_tooltip(available))
+    if (is_mosaic or not available) and self.lamaRadio.isChecked():
+      self.pepsiRadio.setChecked(True)
+    return available
+
   def get_decensor_settings(self) -> dict:
     is_mosaic = self.mosaicRadio.isChecked()
-    model_name = "lama" if (self.lamaRadio.isChecked() and not is_mosaic) else "pepsi"
+    model_name = (
+      "lama"
+      if (self.lamaRadio.isEnabled() and self.lamaRadio.isChecked() and not is_mosaic)
+      else "pepsi"
+    )
     return {
       "is_mosaic": is_mosaic,
       "model_name": model_name,
@@ -1101,8 +1116,8 @@ class MaskEditorWindow(QWidget):
 
       self.mosaicRadio.setChecked(is_mosaic)
       self.barRadio.setChecked(not is_mosaic)
-      self.lamaRadio.setEnabled(not is_mosaic)
-      if is_mosaic and model_name == "lama":
+      available = self._refresh_lama_availability(is_mosaic=is_mosaic)
+      if (is_mosaic or not available) and model_name == "lama":
         model_name = "pepsi"
       self.lamaRadio.setChecked(model_name == "lama")
       self.pepsiRadio.setChecked(model_name != "lama")
@@ -1130,9 +1145,7 @@ class MaskEditorWindow(QWidget):
     is_mosaic = self.mosaicRadio.isChecked()
     self._syncing_settings = True
     try:
-      self.lamaRadio.setEnabled(not is_mosaic)
-      if is_mosaic and self.lamaRadio.isChecked():
-        self.pepsiRadio.setChecked(True)
+      self._refresh_lama_availability(is_mosaic=is_mosaic)
       self.ttaCheckbox.setEnabled(self.pepsiRadio.isChecked())
     finally:
       self._syncing_settings = False

@@ -36,4 +36,4 @@ The first command opens the GUI. The second runs the CLI in bar mode. The third 
 
 ## Windows distribution
 
-See the [Windows distribution guide](INSTALLATION_BINARY.md) to run the bundled GUI or build a distribution ZIP from source.
+See the [Windows distribution guide](INSTALLATION_BINARY.md) to run the bundled GUI or build a distribution 7z archive from source.
