@@ -33,6 +33,9 @@ class IgnoreAll(object):
 
 
 class Decensor(QtCore.QThread):
+  single_image_finished = QtCore.Signal(list, list)
+  single_image_failed = QtCore.Signal(str)
+
   def __init__(
     self,
     parentThread=None,
@@ -64,6 +67,7 @@ class Decensor(QtCore.QThread):
     self.model = None
     self.loaded_config = None
     self.load_only = False
+    self.single_job = None
 
     # if ui_mode is not None:
     #     self.ui_mode = ui_mode
@@ -79,9 +83,16 @@ class Decensor(QtCore.QThread):
       os.makedirs(self.decensor_output_path)
 
   def run(self):
+    is_single_job = self.single_job is not None
     try:
       if self.load_only:
         self.load_model()
+      elif is_single_job:
+        ori_img, colored_img, output_stem = self.single_job
+        results, saved_paths = self.decensor_single_image(
+          ori_img, colored_img, output_stem
+        )
+        self.single_image_finished.emit(results, saved_paths)
       else:
         self.decensor_all_images_in_folder()
         self.do_post_jobs()
@@ -89,8 +100,42 @@ class Decensor(QtCore.QThread):
       message = f"Processing stopped: {error}"
       print(message, file=sys.stderr)
       self.signals.insertText_progressCursor.emit(message)
+      if is_single_job:
+        self.single_image_failed.emit(str(error))
     finally:
       self.load_only = False
+      self.single_job = None
+
+  def set_single_image_job(self, ori_img, colored_img, output_stem):
+    self.single_job = (ori_img.copy(), colored_img.copy(), output_stem)
+
+  def decensor_single_image(self, ori_img, colored_img, output_stem):
+    self.load_model()
+    os.makedirs(self.decensor_output_path, exist_ok=True)
+    self.signals.insertText_progressCursor.emit(f"Decensoring image: {output_stem}\n")
+    results = []
+    saved_paths = []
+    source_img = ori_img if self.is_mosaic else colored_img
+    for variant_number in range(self.variations):
+      output_img = self.decensor_image_variation(
+        source_img, colored_img, variant_number, None
+      )
+      if output_img is None:
+        raise ValueError(
+          "No green mask regions detected! Please mark at least one region before decensoring."
+        )
+      save_name = f"{output_stem} {variant_number}.png"
+      save_path = os.path.join(self.decensor_output_path, save_name)
+      output_img.save(save_path)
+      print(f"Decensored image saved to {save_path}!")
+      self.signals.insertText_progressCursor.emit(
+        f"Decensored image saved to {save_path}!"
+      )
+      self.signals.insertText_progressCursor.emit("=" * 30)
+      results.append(output_img)
+      saved_paths.append(save_path)
+    self.signals.insertText_progressCursor.emit("\nDecensoring complete!")
+    return results, saved_paths
 
   def set_clean_up_input_dirs(self, value):
     self.clean_up_input_dirs = value

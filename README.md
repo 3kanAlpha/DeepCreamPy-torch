@@ -40,11 +40,22 @@ uv run --locked --with tensorflow==2.21.0 python src/convert_models.py
 
 ## ツールの起動
 
-以下のコマンドでGUIが起動します。ツールの使い方自体は旧バージョンと同じであるため、省略します。
+以下のコマンドでGUIが起動します。
 
 ```sh
 uv run --locked python src/main.py
 ```
+
+### GUI上でマスク編集から復元まで行う（Mask & Decensor）
+
+外部の画像編集ソフトで事前に緑色マスクを作成しなくても、メイン画面の **Mask & Decensor** ボタンから内蔵エディタを開いてその場でマスク作成と復元を行えます。
+
+1. メイン画面の **Mask & Decensor** をクリックしてエディタウィンドウを開く（モデル読み込み中でも起動できます）。
+2. 画像をドラッグ＆ドロップ（または **Open Image...** / `Ctrl+V` で貼り付け）して開く。
+3. **Auto Detect** ツールで黒消し・白消しの周辺を矩形選択すると、欠損箇所が自動で緑色マスクとして検出されます。スライダーで検出感度・輪郭線フィルタ・膨張幅を調整し、必要なら **Brush** / **Eraser** / **Rect Fill** で微調整します。
+4. **Decensor** をクリックすると復元が実行され、`decensor_output` に自動保存されると同時にウィンドウ内で Before/After を確認できます。マスクを修正して再実行することも可能です。
+
+各ツールやパラメータ・ショートカットの詳細は [Usage (Mask & Decensor)](docs/USAGE.md#iv-mask--decensor-built-in-mask-editor) を参照してください。
 
 独自のイラストでバー用モデルを学習する場合は、[データ準備と学習の手順](docs/TRAINING.ja.md)を参照してください。
 
@@ -74,6 +85,7 @@ Before opening a new issue, please check [closed issues](https://github.com/Deep
 - Reconstructing images of any size
 - Reconstruction of ANY shaped censor (e.g. black lines, pink hearts, etc.)
 - Decensoring of mosaic censors
+- Built-in **Mask & Decensor** editor with drag-and-drop loading, black/white bar auto-detection, manual brush/eraser tools, and live Before/After preview
 - Limited support for black-and-white/monochrome images
 - Generate multiple variations of reconstructions from the same image
 
