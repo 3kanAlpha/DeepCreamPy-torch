@@ -19,6 +19,7 @@ from anima import (
   AnimaSettings as AnimaSettings,
   anima_availability as anima_availability,
   anima_cuda_available as anima_cuda_available,
+  anima_default_fp8_storage as anima_default_fp8_storage,
   anima_dependencies_available as anima_dependencies_available,
   anima_models_dir as anima_models_dir,
   anima_radio_tooltip as anima_radio_tooltip,

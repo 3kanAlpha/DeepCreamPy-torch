@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
+  QCheckBox,
   QComboBox,
   QDoubleSpinBox,
   QGridLayout,
@@ -24,6 +25,7 @@ from model import (
   ANIMA_DEFAULT_SEED,
   ANIMA_DEFAULT_STEPS,
   AnimaSettings,
+  anima_default_fp8_storage,
   list_anima_files,
 )
 
@@ -127,6 +129,14 @@ class AnimaSettingsPanel(QGroupBox):
     self.maxSizeCombo.setCurrentText(str(ANIMA_DEFAULT_MAX_SIZE))
     self.maxSizeCombo.currentIndexChanged.connect(self._emit_changed)
 
+    self.fp8Checkbox = QCheckBox("FP8 storage (faster on 8GB VRAM)")
+    self.fp8Checkbox.setChecked(anima_default_fp8_storage())
+    self.fp8Checkbox.setToolTip(
+      "Store DiT linear weights in float8_e4m3fn and compute in BF16/FP16 to cut "
+      "VRAM in half and avoid block offloading on 8GB GPUs (auto-enabled on <=10.5 GiB GPUs)."
+    )
+    self.fp8Checkbox.toggled.connect(self._emit_changed)
+
     self.diffusionCombo = QComboBox()
     self.diffusionCombo.setToolTip(
       "Select diffusion checkpoint from models/anima/diffusion/."
@@ -152,6 +162,7 @@ class AnimaSettingsPanel(QGroupBox):
       for r, (label, widget) in enumerate(rows):
         adv_grid.addWidget(QLabel(label), r, 0)
         adv_grid.addWidget(widget, r, 1)
+      adv_grid.addWidget(self.fp8Checkbox, len(rows), 0, 1, 2)
     else:
       adv_grid.addWidget(QLabel("Steps:"), 0, 0)
       adv_grid.addWidget(self.stepsSpin, 0, 1)
@@ -164,6 +175,7 @@ class AnimaSettingsPanel(QGroupBox):
       adv_grid.addWidget(self.seedSpin, 1, 1)
       adv_grid.addWidget(QLabel("Max Size:"), 1, 2)
       adv_grid.addWidget(self.maxSizeCombo, 1, 3)
+      adv_grid.addWidget(self.fp8Checkbox, 1, 4, 1, 2)
 
       adv_grid.addWidget(QLabel("Diffusion:"), 2, 0)
       adv_grid.addWidget(self.diffusionCombo, 2, 1, 1, 2)
@@ -217,6 +229,7 @@ class AnimaSettingsPanel(QGroupBox):
       lllite_strength=self.strengthSpin.value(),
       seed=self.seedSpin.value(),
       max_size=int(self.maxSizeCombo.currentText()),
+      use_fp8_storage=self.fp8Checkbox.isChecked(),
       diffusion_file=diff_file,
       controlnet_file=ctrl_file,
     ).to_dict()
@@ -233,6 +246,7 @@ class AnimaSettingsPanel(QGroupBox):
       self.cfgSpin.setValue(settings.cfg_scale)
       self.strengthSpin.setValue(settings.lllite_strength)
       self.seedSpin.setValue(settings.seed)
+      self.fp8Checkbox.setChecked(bool(settings.use_fp8_storage))
       idx = self.maxSizeCombo.findText(str(settings.max_size))
       if idx >= 0:
         self.maxSizeCombo.setCurrentIndex(idx)

@@ -38,6 +38,8 @@ ANIMA_DEFAULT_MAX_SIZE = 1024
 ANIMA_DEFAULT_SEED = -1
 # Threshold (GiB) below which block-level CPU offloading is automatically enabled.
 ANIMA_BLOCK_OFFLOAD_VRAM_GIB = 10.5
+# Threshold (GiB) when FP8 weight storage is enabled (~2.1 GiB DiT fits on 8 GiB GPUs).
+ANIMA_FP8_BLOCK_OFFLOAD_VRAM_GIB = 6.5
 
 _REQUIRED_PACKAGES = (
   "diffusers",
@@ -61,6 +63,7 @@ class AnimaSettings:
   lllite_strength: float = ANIMA_DEFAULT_LLLITE_STRENGTH
   seed: int = ANIMA_DEFAULT_SEED
   max_size: int = ANIMA_DEFAULT_MAX_SIZE
+  use_fp8_storage: bool | None = None
   diffusion_file: str = ""
   controlnet_file: str = ""
 
@@ -71,6 +74,11 @@ class AnimaSettings:
     seed = int(self.seed)
     max_size = max(512, min(1536, int(self.max_size)))
     max_size = (max_size // 16) * 16
+    use_fp8 = (
+      anima_default_fp8_storage()
+      if self.use_fp8_storage is None
+      else bool(self.use_fp8_storage)
+    )
     return AnimaSettings(
       positive_prompt=str(self.positive_prompt or ""),
       negative_prompt=str(self.negative_prompt or ""),
@@ -79,6 +87,7 @@ class AnimaSettings:
       lllite_strength=strength,
       seed=seed,
       max_size=max_size,
+      use_fp8_storage=use_fp8,
       diffusion_file=str(self.diffusion_file or ""),
       controlnet_file=str(self.controlnet_file or ""),
     )
@@ -93,6 +102,7 @@ class AnimaSettings:
       "lllite_strength": s.lllite_strength,
       "seed": s.seed,
       "max_size": s.max_size,
+      "use_fp8_storage": bool(s.use_fp8_storage),
       "diffusion_file": s.diffusion_file,
       "controlnet_file": s.controlnet_file,
     }
@@ -100,7 +110,7 @@ class AnimaSettings:
   @classmethod
   def from_dict(cls, data: dict | None) -> AnimaSettings:
     if not data:
-      return cls()
+      return cls().normalized()
     return cls(
       positive_prompt=data.get("positive_prompt", ""),
       negative_prompt=data.get("negative_prompt", ANIMA_DEFAULT_NEGATIVE_PROMPT),
@@ -109,6 +119,7 @@ class AnimaSettings:
       lllite_strength=data.get("lllite_strength", ANIMA_DEFAULT_LLLITE_STRENGTH),
       seed=data.get("seed", ANIMA_DEFAULT_SEED),
       max_size=data.get("max_size", ANIMA_DEFAULT_MAX_SIZE),
+      use_fp8_storage=data.get("use_fp8_storage", None),
       diffusion_file=data.get("diffusion_file", ""),
       controlnet_file=data.get("controlnet_file", ""),
     ).normalized()
@@ -149,6 +160,21 @@ def anima_dependencies_available() -> bool:
 
 def anima_cuda_available() -> bool:
   return bool(torch.cuda.is_available())
+
+
+def anima_gpu_vram_gib() -> float | None:
+  if not anima_cuda_available():
+    return None
+  try:
+    return torch.cuda.get_device_properties(0).total_memory / (1024**3)
+  except (RuntimeError, AssertionError):
+    return None
+
+
+def anima_default_fp8_storage() -> bool:
+  """Enable FP8 weight storage by default on <=10.5 GiB GPUs (e.g. 8GB VRAM)."""
+  vram_gib = anima_gpu_vram_gib()
+  return vram_gib is not None and vram_gib <= ANIMA_BLOCK_OFFLOAD_VRAM_GIB
 
 
 def anima_tokenizers_available(tok_dir: Path | None = None) -> bool:
@@ -537,8 +563,14 @@ class AnimaInpainter:
     self.batch_size = 1
 
     self.dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
-    total_vram_gib = torch.cuda.get_device_properties(0).total_memory / (1024**3)
-    self.use_block_offload = total_vram_gib <= ANIMA_BLOCK_OFFLOAD_VRAM_GIB
+    self.use_fp8_storage = bool(self.settings.use_fp8_storage)
+    total_vram_gib = anima_gpu_vram_gib() or 0.0
+    offload_threshold = (
+      ANIMA_FP8_BLOCK_OFFLOAD_VRAM_GIB
+      if self.use_fp8_storage
+      else ANIMA_BLOCK_OFFLOAD_VRAM_GIB
+    )
+    self.use_block_offload = total_vram_gib <= offload_threshold
 
     _ensure_cosmos_torchvision_shim()
     self._load_components()
@@ -587,6 +619,11 @@ class AnimaInpainter:
     self.transformer = CosmosTransformer3DModel(**_anima_transformer_config()).eval()
     _load_state_dict_with_dtype(self.transformer, transformer_sd, self.dtype)
     del transformer_sd
+    if self.use_fp8_storage:
+      self.transformer.enable_layerwise_casting(
+        storage_dtype=torch.float8_e4m3fn,
+        compute_dtype=self.dtype,
+      )
 
     # 4. Qwen-Image VAE (kept on CPU until encode/decode; tiling & slicing enabled)
     vae_raw = load_file(str(self.paths["vae"]), device="cpu")
@@ -837,6 +874,7 @@ class AnimaInpainter:
     self.lllite.apply_to()
     if not self.use_block_offload:
       self.transformer.to(self.device)
+      self.lllite.lllite_modules.to(device=self.device, dtype=self.dtype)
     try:
       total = len(timesteps)
       for idx, t in enumerate(timesteps):

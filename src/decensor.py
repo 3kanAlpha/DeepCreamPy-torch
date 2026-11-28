@@ -69,6 +69,7 @@ class Decensor(QtCore.QThread):
       lllite_strength=args.anima_strength,
       seed=args.anima_seed,
       max_size=args.anima_max_size,
+      use_fp8_storage=args.anima_fp8,
       diffusion_file=args.anima_diffusion,
       controlnet_file=args.anima_controlnet,
     ).normalized()
@@ -203,6 +204,7 @@ class Decensor(QtCore.QThread):
         False,
         normalized.diffusion_file,
         normalized.controlnet_file,
+        bool(normalized.use_fp8_storage),
       )
     return (self.model_name, self.is_mosaic, self.bar_weights)
 
@@ -240,8 +242,13 @@ class Decensor(QtCore.QThread):
     message = f"Loaded {self.model_name} ({mode}) model on {self.model.device}"
     if self.bar_weights is not None:
       message += f" from {self.bar_weights}"
+    flags = []
+    if getattr(self.model, "use_fp8_storage", False):
+      flags.append("FP8")
     if getattr(self.model, "use_block_offload", False):
-      message += " [block offload]"
+      flags.append("block offload")
+    if flags:
+      message += f" [{', '.join(flags)}]"
     if self.model.fallback_reason:
       message += f" ({self.model.fallback_reason})"
     print(message, flush=True)

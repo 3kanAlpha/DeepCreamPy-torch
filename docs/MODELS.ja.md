@@ -65,6 +65,6 @@ CUDA 対応 NVIDIA GPU 環境でオプション依存グループ `anima` を導
   * `models/anima/controlnet/` — 4ch インペイント用 ControlNet-LLLite（例: `anima-lllite-inpainting-v2.safetensors`）
   * `diffusion/` や `controlnet/` に複数ファイルを配置した場合は、詳細設定内のドロップダウンから切り替えられます。
 * **トークナイザ**: 軽量な Qwen3 / T5 トークナイザ定義を `assets/anima_tokenizers/` に同梱しているため、推論時にネット接続は不要です。
-* **8GB VRAM 対策**: `bfloat16`（非対応 GPU は `float16`）を基本とし、コンポーネント順次オフロード・CFG 逐次実行（batch=1）・VAE タイリング／スライシングに加え、VRAM 10.5 GiB 以下の環境ではブロック単位オフロードを自動で有効化します。
+* **8GB VRAM 対策と FP8 ストレージ量子化**: `bfloat16`（非対応 GPU は `float16`）を基本とし、コンポーネント順次オフロード・CFG 逐次実行（batch=1）・VAE タイリング／スライシングを行います。VRAM 10.5 GiB 以下（8GB クラス等）の環境では **FP8 ストレージ量子化（`float8_e4m3fn`、`diffusers` の layerwise casting）** が既定で有効になり、DiT を約 2.1GB に圧縮して GPU 常駐のまま高速に推論できます（GUI の「Advanced Settings」や CLI の `--anima-fp8` / `--no-anima-fp8` でオンオフ可能）。FP8 を無効にした 8GB クラス環境や 6.5 GiB 以下の環境ではブロック単位オフロードが自動で有効になります。
 * **インペイント・クロップ統合・Variations**: 近接するマスク領域を広めの余白付きクロップへ自動統合（中サイズ以下の画像や広範囲欠損は画像全体を一括推論）し、16 の倍数へアライメントします。純ノイズ開始（Denoise 1.0）＋ 4ch LLLite 条件付け ＋ ステップ毎の既知領域 Latent 維持で生成し、マスク内画素のみ貼り戻して境界・モノクロ補正を適用します。Variations は反転ではなくシード違いで生成します。
 * **補助プロンプトと実行方法**: 絵柄維持のため Positive は空欄デフォルト（必要に応じて部位や `@artist` 等を補助入力）、Negative は編集可能な初期値（`censored, bar censor, mosaic censoring`・消去可）となっています。GUI の **Model → Anima** または CLI（`--model anima`）から利用できます。

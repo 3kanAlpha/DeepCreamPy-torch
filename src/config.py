@@ -141,6 +141,15 @@ def get_args(*, cli=False):
     help="maximum crop/image side length for Anima (512..1536, multiple of 16)",
   )
   parser.add_argument(
+    "--anima-fp8",
+    action=argparse.BooleanOptionalAction,
+    default=None,
+    help=(
+      "store Anima DiT weights in FP8 (float8_e4m3fn) for lower VRAM and faster "
+      "inference on 8GB GPUs (default: auto-enabled on <=10.5 GiB GPUs)"
+    ),
+  )
+  parser.add_argument(
     "--anima-diffusion",
     default="",
     help="filename or path to Anima diffusion .safetensors checkpoint",

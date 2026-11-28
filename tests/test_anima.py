@@ -33,6 +33,7 @@ from anima import (
   _fill_masked_pixels_for_vae,
   _load_state_dict_with_dtype,
   anima_availability,
+  anima_default_fp8_storage,
   anima_dependencies_available,
   anima_tokenizers_dir,
 )
@@ -403,6 +404,107 @@ class AnimaPreprocessingAndConversionTests(unittest.TestCase):
     # _keep_in_fp32_modules ('learnable_pos_embed') stays in float32.
     self.assertEqual(tr.learnable_pos_embed.pos_emb_h.dtype, torch.float32)
 
+  def test_fp8_storage_defaults_for_8gb_vs_16gb_and_cli_flags(self):
+    with patch.object(anima, "anima_gpu_vram_gib", return_value=8.0):
+      self.assertTrue(anima_default_fp8_storage())
+      self.assertTrue(AnimaSettings().normalized().use_fp8_storage)
+      self.assertFalse(
+        AnimaSettings(use_fp8_storage=False).normalized().use_fp8_storage
+      )
+
+    with patch.object(anima, "anima_gpu_vram_gib", return_value=16.0):
+      self.assertFalse(anima_default_fp8_storage())
+      self.assertFalse(AnimaSettings().normalized().use_fp8_storage)
+      self.assertTrue(AnimaSettings(use_fp8_storage=True).normalized().use_fp8_storage)
+
+    with patch.object(anima, "anima_gpu_vram_gib", return_value=None):
+      self.assertFalse(anima_default_fp8_storage())
+
+    with patch.object(sys, "argv", [sys.argv[0]]):
+      self.assertIsNone(config.get_args(cli=True).anima_fp8)
+    with patch.object(sys, "argv", [sys.argv[0], "--anima-fp8"]):
+      self.assertTrue(config.get_args(cli=True).anima_fp8)
+    with patch.object(sys, "argv", [sys.argv[0], "--no-anima-fp8"]):
+      self.assertFalse(config.get_args(cli=True).anima_fp8)
+
+    with patch.object(sys, "argv", [sys.argv[0]]):
+      decensor = Decensor()
+    decensor.model_name = "anima"
+    decensor.anima_settings = AnimaSettings(use_fp8_storage=True)
+    key_fp8 = decensor._current_model_config_key()
+    decensor.anima_settings = AnimaSettings(use_fp8_storage=False)
+    key_bf16 = decensor._current_model_config_key()
+    self.assertNotEqual(key_fp8, key_bf16)
+
+  @unittest.skipUnless(
+    anima_dependencies_available(), "Optional anima dependencies not installed"
+  )
+  def test_fp8_layerwise_casting_compatible_with_lllite_hooks(self):
+    from diffusers.models import CosmosTransformer3DModel
+
+    _ensure_cosmos_torchvision_shim()
+    tr = CosmosTransformer3DModel(
+      in_channels=4,
+      out_channels=4,
+      num_attention_heads=2,
+      attention_head_dim=16,
+      num_layers=1,
+      mlp_ratio=2.0,
+      text_embed_dim=32,
+      adaln_lora_dim=16,
+      max_size=(4, 32, 32),
+      patch_size=(1, 2, 2),
+      rope_scale=(1.0, 4.0, 4.0),
+      concat_padding_mask=True,
+      extra_pos_embed_type=None,
+    ).eval()
+    _load_state_dict_with_dtype(tr, tr.state_dict(), torch.bfloat16)
+    tr.enable_layerwise_casting(
+      storage_dtype=torch.float8_e4m3fn, compute_dtype=torch.bfloat16
+    )
+    self.assertEqual(
+      tr.transformer_blocks[0].attn1.to_q.weight.dtype, torch.float8_e4m3fn
+    )
+
+    cond_trunk = _Conditioning1(16, 8, 1, False, cond_in_channels=4)
+    mod0 = LLLiteModuleDiT(
+      "lllite_dit_blocks_0_self_attn_q_proj",
+      tr.transformer_blocks[0].attn1.to_q,
+      8,
+      12,
+    )
+    torch.nn.init.normal_(mod0.up.weight, std=0.2)
+    sd = {f"lllite_conditioning1.{k}": v for k, v in cond_trunk.state_dict().items()}
+    sd.update({f"{mod0.lllite_name}.{k}": v for k, v in mod0.state_dict().items()})
+    lllite = ControlNetLLLiteDiT.from_state_dict(sd, tr, dtype=torch.bfloat16)
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    tr.to(device)
+    latents = torch.randn(1, 4, 1, 8, 8, device=device, dtype=torch.bfloat16)
+    t = torch.tensor([0.5], device=device, dtype=torch.bfloat16)
+    enc = torch.randn(1, 8, 32, device=device, dtype=torch.bfloat16)
+    pad = torch.zeros(1, 1, 64, 64, device=device, dtype=torch.bfloat16)
+    rgb = torch.randn(1, 3, 64, 64).clamp(-1, 1)
+    mask = torch.zeros(1, 1, 64, 64)
+    mask[:, :, 16:48, 16:48] = 1.0
+
+    with torch.inference_mode():
+      base = tr(latents, t, enc, padding_mask=pad, return_dict=False)[0]
+      lllite.encode_conditioning(
+        rgb, mask, device=device, dtype=torch.bfloat16, offload_trunk_to_cpu=False
+      )
+      lllite.apply_to()
+      guided = tr(latents, t, enc, padding_mask=pad, return_dict=False)[0]
+      lllite.restore()
+      restored = tr(latents, t, enc, padding_mask=pad, return_dict=False)[0]
+
+    self.assertTrue(torch.isfinite(guided).all().item())
+    self.assertFalse(torch.allclose(base, guided))
+    self.assertTrue(torch.equal(base, restored))
+    self.assertEqual(
+      tr.transformer_blocks[0].attn1.to_q.weight.dtype, torch.float8_e4m3fn
+    )
+
 
 class AnimaGuardsAndDecensorTests(unittest.TestCase):
   def _make_fake_anima_dir(self, root: Path):
@@ -649,14 +751,18 @@ class AnimaGuiTests(unittest.TestCase):
 
       win.animaSettingsPanel.positivePromptEdit.setText("1girl, @artist")
       win.animaSettingsPanel.stepsSpin.setValue(20)
+      win.animaSettingsPanel.fp8Checkbox.setChecked(False)
       self.assertEqual(
         editor.animaSettingsPanel.positivePromptEdit.text(), "1girl, @artist"
       )
       self.assertEqual(editor.animaSettingsPanel.stepsSpin.value(), 20)
+      self.assertFalse(editor.animaSettingsPanel.fp8Checkbox.isChecked())
 
-      # Edit negative prompt in Editor -> syncs back to MainWindow
+      # Edit negative prompt & FP8 toggle in Editor -> syncs back to MainWindow
       editor.animaSettingsPanel.negativePromptEdit.setText("")
+      editor.animaSettingsPanel.fp8Checkbox.setChecked(True)
       self.assertEqual(win.animaSettingsPanel.negativePromptEdit.text(), "")
+      self.assertTrue(win.animaSettingsPanel.fp8Checkbox.isChecked())
 
       # Switch to Mosaic -> Anima disabled, falls back to PEPSI
       win.mosaicButton.setChecked(True)

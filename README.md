@@ -46,7 +46,7 @@ uv run --locked --with tensorflow==2.21.0 python src/convert_models.py
 
 ### Anima (+ ControlNet-LLLite) を使用する場合（Bar モード・GPU 専用）
 
-CUDA対応のNVIDIA GPU（VRAM 8GB 以上の環境ではブロック単位オフロードを自動有効化）を使用している場合、Barモードの復元モデルとして **Anima (`Anima-Base` + 4chインペイント用 ControlNet-LLLite)** を選択できます。
+CUDA対応のNVIDIA GPU（VRAM 8GB クラスの環境では **FP8 ストレージ量子化** が既定で有効になり、ブロック単位オフロードなしで高速動作します。詳細設定や `--no-anima-fp8` でオフにも切り替え可能）を使用している場合、Barモードの復元モデルとして **Anima (`Anima-Base` + 4chインペイント用 ControlNet-LLLite)** を選択できます。
 
 Animaのモデルウェイトは非商用ライセンスのため配布物には同梱されていません。[circlestone-labs/Anima](https://huggingface.co/circlestone-labs/Anima) および [kohya-ss/Anima-LLLite](https://huggingface.co/kohya-ss/Anima-LLLite) 等からComfyUI互換の単体 `.safetensors` ファイルを入手し、以下の4フォルダへ配置してください（ファイル名のリネームは不要です）。
 
