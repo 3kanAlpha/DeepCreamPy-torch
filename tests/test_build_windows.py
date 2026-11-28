@@ -26,6 +26,12 @@ class BuildWindowsTests(unittest.TestCase):
     include_anima_assets: bool = False,
   ):
     (root / "LICENSE.md").write_text("license", encoding="utf-8")
+    lang_dir = root / "lang"
+    lang_dir.mkdir()
+    (lang_dir / "en.json").write_text(
+      '{"_meta": {"name": "English"}}', encoding="utf-8"
+    )
+    (lang_dir / "ja.json").write_text('{"_meta": {"name": "日本語"}}', encoding="utf-8")
     docs = root / "docs"
     docs.mkdir()
     (docs / "ACKNOWLEDGEMENTS.md").write_text("ack", encoding="utf-8")
@@ -95,6 +101,8 @@ class BuildWindowsTests(unittest.TestCase):
 
       bundle_dir = repo / "dist" / build_windows.NAME
       self.assertTrue(bundle_dir.is_dir())
+      self.assertTrue((bundle_dir / "lang" / "en.json").is_file())
+      self.assertTrue((bundle_dir / "lang" / "ja.json").is_file())
       self.assertTrue((bundle_dir / "models" / "lama").is_dir())
       self.assertFalse((bundle_dir / "models" / "lama" / "inpaint.pt").exists())
       self.assertFalse((bundle_dir / "models" / "anima").exists())

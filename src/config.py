@@ -191,6 +191,11 @@ def get_args(*, cli=False):
     default=False,
     help="true if you want ui mode, false if you want command line interface",
   )
+  parser.add_argument(
+    "--lang",
+    default=None,
+    help="override GUI display language code (e.g. en, ja)",
+  )
 
   args = parser.parse_args()
   if args.model == "lama" and args.is_mosaic:

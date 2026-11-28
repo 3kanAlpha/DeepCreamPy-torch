@@ -28,6 +28,7 @@ from anima import (
   anima_radio_tooltip as anima_radio_tooltip,
   list_anima_files as list_anima_files,
 )
+from i18n import t
 from lama import FFCResNetGenerator, infer_lama_config
 from libs.utils import (
   prepare_crop,
@@ -63,11 +64,8 @@ def lama_radio_tooltip(available=None):
   if available is None:
     available = lama_weights_available()
   if available:
-    return "LaMa is available in Bar censor mode only."
-  return (
-    "LaMa model not found. Place a converted inpaint.pt at "
-    f"{LAMA_WEIGHTS_PATH} to enable LaMa."
-  )
+    return t("models.lama_bar_only")
+  return t("models.lama_missing", path=LAMA_WEIGHTS_PATH)
 
 
 # (horizontal_flip, dy, dx) in 256x256 input space

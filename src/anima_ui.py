@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
   QWidget,
 )
 
+from i18n import t
 from model import (
   ANIMA_DEFAULT_CACHE_PROMPT,
   ANIMA_DEFAULT_CFG,
@@ -41,11 +42,12 @@ class AnimaSettingsPanel(QGroupBox):
   settings_changed = Signal()
 
   def __init__(self, *, compact: bool = False, parent=None):
-    super().__init__("Anima Settings", parent)
+    super().__init__(parent)
     self._compact = compact
     self._syncing = False
     self._build_ui()
     self.refresh_file_lists()
+    self.retranslate_ui()
 
   def _build_ui(self) -> None:
     root = QVBoxLayout(self)
@@ -56,38 +58,29 @@ class AnimaSettingsPanel(QGroupBox):
     prompt_grid = QGridLayout()
     prompt_grid.setSpacing(4)
 
+    self.positivePromptLabel = QLabel()
     self.positivePromptEdit = QLineEdit()
-    self.positivePromptEdit.setPlaceholderText(
-      "Optional hints (e.g. body part, @artist)"
-    )
-    self.positivePromptEdit.setToolTip(
-      "Optional auxiliary positive prompt. Leave blank to preserve the original art style."
-    )
     self.positivePromptEdit.textChanged.connect(self._emit_changed)
 
+    self.negativePromptLabel = QLabel()
     self.negativePromptEdit = QLineEdit(ANIMA_DEFAULT_NEGATIVE_PROMPT)
-    self.negativePromptEdit.setPlaceholderText("Optional negative prompt")
-    self.negativePromptEdit.setToolTip(
-      "Editable negative prompt. Clear to run without negative terms."
-    )
     self.negativePromptEdit.textChanged.connect(self._emit_changed)
 
     if self._compact:
-      prompt_grid.addWidget(QLabel("Prompt:"), 0, 0)
+      prompt_grid.addWidget(self.positivePromptLabel, 0, 0)
       prompt_grid.addWidget(self.positivePromptEdit, 1, 0)
-      prompt_grid.addWidget(QLabel("Negative:"), 2, 0)
+      prompt_grid.addWidget(self.negativePromptLabel, 2, 0)
       prompt_grid.addWidget(self.negativePromptEdit, 3, 0)
     else:
-      prompt_grid.addWidget(QLabel("Prompt (optional):"), 0, 0)
+      prompt_grid.addWidget(self.positivePromptLabel, 0, 0)
       prompt_grid.addWidget(self.positivePromptEdit, 0, 1)
-      prompt_grid.addWidget(QLabel("Negative prompt:"), 1, 0)
+      prompt_grid.addWidget(self.negativePromptLabel, 1, 0)
       prompt_grid.addWidget(self.negativePromptEdit, 1, 1)
 
     root.addLayout(prompt_grid)
 
     # Collapsible advanced section
     self.advancedToggle = QToolButton()
-    self.advancedToggle.setText("Advanced Settings")
     self.advancedToggle.setCheckable(True)
     self.advancedToggle.setChecked(False)
     self.advancedToggle.setArrowType(Qt.ArrowType.RightArrow)
@@ -102,11 +95,13 @@ class AnimaSettingsPanel(QGroupBox):
     adv_grid.setContentsMargins(0, 2, 0, 0)
     adv_grid.setSpacing(4)
 
+    self.stepsLabel = QLabel()
     self.stepsSpin = QSpinBox()
     self.stepsSpin.setRange(1, 100)
     self.stepsSpin.setValue(ANIMA_DEFAULT_STEPS)
     self.stepsSpin.valueChanged.connect(self._emit_changed)
 
+    self.cfgLabel = QLabel()
     self.cfgSpin = QDoubleSpinBox()
     self.cfgSpin.setRange(1.0, 20.0)
     self.cfgSpin.setSingleStep(0.5)
@@ -114,6 +109,7 @@ class AnimaSettingsPanel(QGroupBox):
     self.cfgSpin.setValue(ANIMA_DEFAULT_CFG)
     self.cfgSpin.valueChanged.connect(self._emit_changed)
 
+    self.strengthLabel = QLabel()
     self.strengthSpin = QDoubleSpinBox()
     self.strengthSpin.setRange(0.0, 2.0)
     self.strengthSpin.setSingleStep(0.05)
@@ -121,96 +117,126 @@ class AnimaSettingsPanel(QGroupBox):
     self.strengthSpin.setValue(ANIMA_DEFAULT_LLLITE_STRENGTH)
     self.strengthSpin.valueChanged.connect(self._emit_changed)
 
+    self.seedLabel = QLabel()
     self.seedSpin = QSpinBox()
     self.seedSpin.setRange(-1, 2147483647)
-    self.seedSpin.setSpecialValueText("Random (-1)")
     self.seedSpin.setValue(ANIMA_DEFAULT_SEED)
     self.seedSpin.valueChanged.connect(self._emit_changed)
 
+    self.maxSizeLabel = QLabel()
     self.maxSizeCombo = QComboBox()
     self.maxSizeCombo.addItems(MAX_SIZE_OPTIONS)
     self.maxSizeCombo.setCurrentText(str(ANIMA_DEFAULT_MAX_SIZE))
     self.maxSizeCombo.currentIndexChanged.connect(self._emit_changed)
 
+    self.cfgSkipTailLabel = QLabel()
     self.cfgSkipTailSpin = QSpinBox()
     self.cfgSkipTailSpin.setRange(0, round(ANIMA_MAX_CFG_SKIP_TAIL * 100))
     self.cfgSkipTailSpin.setSingleStep(1)
     self.cfgSkipTailSpin.setSuffix("%")
     self.cfgSkipTailSpin.setValue(round(ANIMA_DEFAULT_CFG_SKIP_TAIL * 100))
-    self.cfgSkipTailSpin.setToolTip(
-      "Run the final N% of denoising steps with CFG=1.0 to speed up inference "
-      "(0% disables; e.g. 20% skips CFG on the last 20% of steps)."
-    )
     self.cfgSkipTailSpin.valueChanged.connect(self._emit_changed)
 
-    self.fp8Checkbox = QCheckBox("FP8 storage (faster on 8GB VRAM)")
+    self.fp8Checkbox = QCheckBox()
     self.fp8Checkbox.setChecked(anima_default_fp8_storage())
-    self.fp8Checkbox.setToolTip(
-      "Store DiT linear weights in float8_e4m3fn and compute in BF16/FP16 to cut "
-      "VRAM in half and avoid block offloading on 8GB GPUs (auto-enabled on <=10.5 GiB GPUs)."
-    )
     self.fp8Checkbox.toggled.connect(self._emit_changed)
 
-    self.cachePromptCheckbox = QCheckBox("Cache prompt embeddings")
+    self.cachePromptCheckbox = QCheckBox()
     self.cachePromptCheckbox.setChecked(ANIMA_DEFAULT_CACHE_PROMPT)
-    self.cachePromptCheckbox.setToolTip(
-      "Cache encoded prompt embeddings in CPU RAM to skip Qwen3 re-encoding across "
-      "variations, batch images, or retries with the same prompt."
-    )
     self.cachePromptCheckbox.toggled.connect(self._emit_changed)
 
+    self.diffusionLabel = QLabel()
     self.diffusionCombo = QComboBox()
-    self.diffusionCombo.setToolTip(
-      "Select diffusion checkpoint from models/anima/diffusion/."
-    )
     self.diffusionCombo.currentIndexChanged.connect(self._emit_changed)
 
+    self.controlnetLabel = QLabel()
     self.controlnetCombo = QComboBox()
-    self.controlnetCombo.setToolTip(
-      "Select 4ch Inpaint ControlNet-LLLite from models/anima/controlnet/."
-    )
     self.controlnetCombo.currentIndexChanged.connect(self._emit_changed)
 
     if self._compact:
       rows = [
-        ("Steps:", self.stepsSpin),
-        ("CFG:", self.cfgSpin),
-        ("Tail CFG=1:", self.cfgSkipTailSpin),
-        ("LLLite:", self.strengthSpin),
-        ("Seed:", self.seedSpin),
-        ("Max Size:", self.maxSizeCombo),
-        ("Diffusion:", self.diffusionCombo),
-        ("ControlNet:", self.controlnetCombo),
+        (self.stepsLabel, self.stepsSpin),
+        (self.cfgLabel, self.cfgSpin),
+        (self.cfgSkipTailLabel, self.cfgSkipTailSpin),
+        (self.strengthLabel, self.strengthSpin),
+        (self.seedLabel, self.seedSpin),
+        (self.maxSizeLabel, self.maxSizeCombo),
+        (self.diffusionLabel, self.diffusionCombo),
+        (self.controlnetLabel, self.controlnetCombo),
       ]
       for r, (label, widget) in enumerate(rows):
-        adv_grid.addWidget(QLabel(label), r, 0)
+        adv_grid.addWidget(label, r, 0)
         adv_grid.addWidget(widget, r, 1)
       adv_grid.addWidget(self.fp8Checkbox, len(rows), 0, 1, 2)
       adv_grid.addWidget(self.cachePromptCheckbox, len(rows) + 1, 0, 1, 2)
     else:
-      adv_grid.addWidget(QLabel("Steps:"), 0, 0)
+      adv_grid.addWidget(self.stepsLabel, 0, 0)
       adv_grid.addWidget(self.stepsSpin, 0, 1)
-      adv_grid.addWidget(QLabel("CFG:"), 0, 2)
+      adv_grid.addWidget(self.cfgLabel, 0, 2)
       adv_grid.addWidget(self.cfgSpin, 0, 3)
-      adv_grid.addWidget(QLabel("LLLite Strength:"), 0, 4)
+      adv_grid.addWidget(self.strengthLabel, 0, 4)
       adv_grid.addWidget(self.strengthSpin, 0, 5)
 
-      adv_grid.addWidget(QLabel("Seed:"), 1, 0)
+      adv_grid.addWidget(self.seedLabel, 1, 0)
       adv_grid.addWidget(self.seedSpin, 1, 1)
-      adv_grid.addWidget(QLabel("Max Size:"), 1, 2)
+      adv_grid.addWidget(self.maxSizeLabel, 1, 2)
       adv_grid.addWidget(self.maxSizeCombo, 1, 3)
-      adv_grid.addWidget(QLabel("Tail CFG=1:"), 1, 4)
+      adv_grid.addWidget(self.cfgSkipTailLabel, 1, 4)
       adv_grid.addWidget(self.cfgSkipTailSpin, 1, 5)
 
       adv_grid.addWidget(self.fp8Checkbox, 2, 0, 1, 3)
       adv_grid.addWidget(self.cachePromptCheckbox, 2, 3, 1, 3)
 
-      adv_grid.addWidget(QLabel("Diffusion:"), 3, 0)
+      adv_grid.addWidget(self.diffusionLabel, 3, 0)
       adv_grid.addWidget(self.diffusionCombo, 3, 1, 1, 2)
-      adv_grid.addWidget(QLabel("ControlNet:"), 3, 3)
+      adv_grid.addWidget(self.controlnetLabel, 3, 3)
       adv_grid.addWidget(self.controlnetCombo, 3, 4, 1, 2)
 
     root.addWidget(self.advancedContainer)
+
+  def retranslate_ui(self) -> None:
+    self.setTitle(t("anima.settings_group"))
+    self.positivePromptLabel.setText(
+      t("anima.prompt_label_compact" if self._compact else "anima.prompt_label")
+    )
+    self.positivePromptEdit.setPlaceholderText(t("anima.prompt_placeholder"))
+    self.positivePromptEdit.setToolTip(t("anima.prompt_tooltip"))
+
+    self.negativePromptLabel.setText(
+      t(
+        "anima.negative_prompt_label_compact"
+        if self._compact
+        else "anima.negative_prompt_label"
+      )
+    )
+    self.negativePromptEdit.setPlaceholderText(t("anima.negative_prompt_placeholder"))
+    self.negativePromptEdit.setToolTip(t("anima.negative_prompt_tooltip"))
+
+    self.advancedToggle.setText(t("anima.advanced_toggle"))
+    self.stepsLabel.setText(t("anima.steps_label"))
+    self.cfgLabel.setText(t("anima.cfg_label"))
+    self.strengthLabel.setText(
+      t("anima.lllite_label_compact" if self._compact else "anima.lllite_label")
+    )
+    self.seedLabel.setText(t("anima.seed_label"))
+    self.seedSpin.setSpecialValueText(t("anima.seed_random"))
+    self.maxSizeLabel.setText(t("anima.max_size_label"))
+    self.cfgSkipTailLabel.setText(t("anima.tail_cfg_label"))
+    self.cfgSkipTailSpin.setToolTip(t("anima.tail_cfg_tooltip"))
+
+    self.fp8Checkbox.setText(t("anima.fp8_checkbox"))
+    self.fp8Checkbox.setToolTip(t("anima.fp8_tooltip"))
+    self.cachePromptCheckbox.setText(t("anima.cache_prompt_checkbox"))
+    self.cachePromptCheckbox.setToolTip(t("anima.cache_prompt_tooltip"))
+
+    self.diffusionLabel.setText(t("anima.diffusion_label"))
+    self.diffusionCombo.setToolTip(t("anima.diffusion_tooltip"))
+    self.controlnetLabel.setText(t("anima.controlnet_label"))
+    self.controlnetCombo.setToolTip(t("anima.controlnet_tooltip"))
+
+    for combo in (self.diffusionCombo, self.controlnetCombo):
+      if combo.count() == 1 and combo.itemData(0) == "":
+        combo.setItemText(0, t("anima.none_found"))
 
   def _on_advanced_toggled(self, expanded: bool) -> None:
     self.advancedToggle.setArrowType(
@@ -235,7 +261,7 @@ class AnimaSettingsPanel(QGroupBox):
     prev = combo.currentData() or ""
     combo.clear()
     if not files:
-      combo.addItem("(none found)", "")
+      combo.addItem(t("anima.none_found"), "")
       combo.setEnabled(False)
       return
     for path in files:

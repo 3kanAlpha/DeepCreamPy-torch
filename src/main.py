@@ -4,6 +4,7 @@
 # Please read this tutorial on how to prepare your images for use with DeepCreamPy.
 # The greater the number of variations, the longer decensoring process will be.
 
+import argparse
 import sys
 
 from PySide6.QtCore import Qt
@@ -11,6 +12,7 @@ from PySide6.QtGui import QFont, QTextCursor
 from PySide6.QtWidgets import (
   QApplication,
   QCheckBox,
+  QComboBox,
   QGridLayout,
   QGroupBox,
   QHBoxLayout,
@@ -27,6 +29,7 @@ from PySide6.QtWidgets import (
 
 from anima_ui import AnimaSettingsPanel
 from decensor import Decensor
+from i18n import i18n, t
 from mask_editor import MaskEditorWindow
 from model import (
   AnimaSettings,
@@ -37,9 +40,7 @@ from model import (
 )
 from signals import Signals
 
-# from decensor import Decensor
-
-# from progressWindow import ProgressWindow
+APP_VERSION = "3.4.0-Unofficial"
 
 
 class MainWindow(QWidget):
@@ -47,10 +48,17 @@ class MainWindow(QWidget):
     super().__init__()
     self.signals = Signals()
     self._syncing_settings = False
+    self._syncing_language = False
     self._busy_reason = ""
+    self._busy_reason_key = ""
+    self._busy_source = ""
     self._can_cancel = False
+    self._cancelling = False
+    self._is_initial_progress = True
+    self._status_is_default = True
     self.maskEditorWindow = None
     self.initUI()
+    i18n.add_listener(self._on_language_changed)
     self.decensor = Decensor(self)
     self.decensor.signals = self.signals
     self.setSignals()
@@ -61,24 +69,42 @@ class MainWindow(QWidget):
     self.load_model()
 
   def initUI(self):
-
     grid_layout = QGridLayout()
     grid_layout.setSpacing(10)
     self.setLayout(grid_layout)
 
+    # Top language selector bar
+    lang_bar = QHBoxLayout()
+    lang_bar.addStretch(1)
+    self.languageLabel = QLabel()
+    self.languageCombo = QComboBox()
+    self.languageCombo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+    self._populate_language_combo()
+    self.languageCombo.currentIndexChanged.connect(self._on_language_combo_changed)
+    lang_bar.addWidget(self.languageLabel)
+    lang_bar.addWidget(self.languageCombo)
+
+    # Top language selector bar
+    lang_bar = QHBoxLayout()
+    lang_bar.addStretch(1)
+    self.languageLabel = QLabel()
+    self.languageCombo = QComboBox()
+    self.languageCombo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+    self._populate_language_combo()
+    self.languageCombo.currentIndexChanged.connect(self._on_language_combo_changed)
+    lang_bar.addWidget(self.languageLabel)
+    lang_bar.addWidget(self.languageCombo)
+
     # Tutorial
     self.tutorialLabel = QLabel()
-    self.tutorialLabel.setText(
-      "Welcome to DeepCreamPy!\n\nIf you're new to DCP, please read the README.\nThis program does nothing without the proper setup of your images.\n\nReport any bugs you encounter to me on Github or Twitter @deeppomf."
-    )
     self.tutorialLabel.setAlignment(Qt.AlignmentFlag.AlignCenter)
     self.tutorialLabel.setFont(QFont("Sans Serif", 13))
 
     # Censor type group
-    self.censorTypeGroupBox = QGroupBox("Censor Type")
+    self.censorTypeGroupBox = QGroupBox()
 
-    self.barButton = QRadioButton("Bar censor")
-    self.mosaicButton = QRadioButton("Mosaic censor")
+    self.barButton = QRadioButton()
+    self.mosaicButton = QRadioButton()
     self.barButton.setChecked(True)
     self.mosaicButton.toggled.connect(self.updateModelAvailability)
 
@@ -88,17 +114,14 @@ class MainWindow(QWidget):
     self.censorTypeGroupBox.setLayout(censorLayout)
 
     # Model group
-    self.modelGroupBox = QGroupBox("Model")
+    self.modelGroupBox = QGroupBox()
 
-    self.pepsiModelButton = QRadioButton("PEPSI (default)")
-    self.lamaModelButton = QRadioButton("LaMa (Bar only)")
-    self.animaModelButton = QRadioButton("Anima (Bar, GPU only)")
+    self.pepsiModelButton = QRadioButton()
+    self.lamaModelButton = QRadioButton()
+    self.animaModelButton = QRadioButton()
     self.pepsiModelButton.setChecked(True)
-    self.ttaCheckbox = QCheckBox("Use TTA (flip + shift)")
+    self.ttaCheckbox = QCheckBox()
     self.ttaCheckbox.setChecked(True)
-    self.ttaCheckbox.setToolTip(
-      "Average 4 horizontal-flip and small-shift views for higher PEPSI accuracy."
-    )
     self.animaSettingsPanel = AnimaSettingsPanel(compact=False)
     self.animaSettingsPanel.setVisible(False)
     self.animaSettingsPanel.settings_changed.connect(self._emit_settings_to_editor)
@@ -117,7 +140,7 @@ class MainWindow(QWidget):
     self.modelGroupBox.setLayout(modelLayout)
 
     # Variation count group
-    self.variationsGroupBox = QGroupBox("Number of Decensor Variations")
+    self.variationsGroupBox = QGroupBox()
 
     var1Button = QRadioButton("1")
     var2Button = QRadioButton("2")
@@ -131,27 +154,22 @@ class MainWindow(QWidget):
     varLayout.addWidget(var1Button)
     varLayout.addWidget(var2Button)
     varLayout.addWidget(var3Button)
-    # varLayout.addStretch(1)
     self.variationsGroupBox.setLayout(varLayout)
 
     # Action buttons
-    self.decensorButton = QPushButton("Decensor Your Images")
+    self.decensorButton = QPushButton()
     self.decensorButton.clicked.connect(self.decensorClicked)
     self.decensorButton.setSizePolicy(
       QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred
     )
 
-    self.maskEditorButton = QPushButton("Mask and Decensor")
-    self.maskEditorButton.setToolTip(
-      "Open interactive editor to mask and decensor an image directly."
-    )
+    self.maskEditorButton = QPushButton()
     self.maskEditorButton.clicked.connect(self.openMaskEditor)
     self.maskEditorButton.setSizePolicy(
       QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred
     )
 
-    self.cancelButton = QPushButton("Cancel")
-    self.cancelButton.setToolTip("Cancel the currently running decensoring job.")
+    self.cancelButton = QPushButton()
     self.cancelButton.setEnabled(False)
     self.cancelButton.clicked.connect(self.cancel_processing)
     self.cancelButton.setSizePolicy(
@@ -164,15 +182,10 @@ class MainWindow(QWidget):
     actionButtonsLayout.addWidget(self.maskEditorButton, 1)
 
     # Progress message
-    # self.progressGroupBox = QGroupBox('Progress')
-
     self.progressMessage = QTextEdit()
     self.progressCursor = QTextCursor(self.progressMessage.document())
     self.progressMessage.setTextCursor(self.progressCursor)
     self.progressMessage.setReadOnly(True)
-    self.progressCursor.insertText(
-      "After you prepared your images, click on the decensor button once to begin decensoring.\nPlease be patient.\nDecensoring will take time.\n"
-    )
 
     # Progress Bar
     self.statusBar = QStatusBar(self)
@@ -180,51 +193,148 @@ class MainWindow(QWidget):
     self.progressBar.setMinimum(0)
     self.progressBar.setMaximum(100)
     self.progressBar.setValue(0)
-    self.statusLabel = QLabel("Showing Progress")
+    self.statusLabel = QLabel()
 
     self.statusBar.addWidget(self.statusLabel, 1)
     self.statusBar.addWidget(self.progressBar, 2)
 
-    self.cleanInputDirectoryCheckbox = QCheckBox(
-      "Clean up input directories after decensoring"
-    )
+    self.cleanInputDirectoryCheckbox = QCheckBox()
 
     # put all groups into grid
     # addWidget(row, column, rowSpan, columnSpan)
-    grid_layout.addWidget(self.tutorialLabel, 0, 0, 1, 3)
-    grid_layout.addWidget(self.censorTypeGroupBox, 1, 0, 1, 1)
-    grid_layout.addWidget(self.modelGroupBox, 1, 1, 1, 1)
-    grid_layout.addWidget(self.variationsGroupBox, 1, 2, 1, 1)
-    grid_layout.addWidget(self.animaSettingsPanel, 2, 0, 1, 3)
-    grid_layout.addWidget(self.cleanInputDirectoryCheckbox, 3, 0, 1, 3)
-    grid_layout.addLayout(actionButtonsLayout, 4, 0, 1, 3)
-    grid_layout.addWidget(self.progressMessage, 5, 0, 1, 3)
-    grid_layout.addWidget(self.statusBar, 6, 0, 1, 3)
+    grid_layout.addLayout(lang_bar, 0, 0, 1, 3)
+    grid_layout.addWidget(self.tutorialLabel, 1, 0, 1, 3)
+    grid_layout.addWidget(self.censorTypeGroupBox, 2, 0, 1, 1)
+    grid_layout.addWidget(self.modelGroupBox, 2, 1, 1, 1)
+    grid_layout.addWidget(self.variationsGroupBox, 2, 2, 1, 1)
+    grid_layout.addWidget(self.animaSettingsPanel, 3, 0, 1, 3)
+    grid_layout.addWidget(self.cleanInputDirectoryCheckbox, 4, 0, 1, 3)
+    grid_layout.addLayout(actionButtonsLayout, 5, 0, 1, 3)
+    grid_layout.addWidget(self.progressMessage, 6, 0, 1, 3)
+    grid_layout.addWidget(self.statusBar, 7, 0, 1, 3)
+
+    self.retranslate_ui()
 
     # window size settings
-    self.resize(900, 600)
+    self.resize(900, 620)
     self.center()
-    self.setWindowTitle("DeepCreamPy v3.3.1-Unofficial")
     self.show()
 
+  def _populate_language_combo(self):
+    self._syncing_language = True
+    try:
+      self.languageCombo.clear()
+      languages = i18n.available_languages()
+      if not languages:
+        languages = [(i18n.current_code, i18n.current_code)]
+      for code, display_name in languages:
+        self.languageCombo.addItem(display_name, code)
+      idx = self.languageCombo.findData(i18n.current_code)
+      if idx >= 0:
+        self.languageCombo.setCurrentIndex(idx)
+    finally:
+      self._syncing_language = False
+
+  def _on_language_combo_changed(self, index: int):
+    if self._syncing_language or index < 0:
+      return
+    code = self.languageCombo.itemData(index)
+    if code:
+      i18n.set_language(str(code), persist=True)
+
+  def _on_language_changed(self, code: str):
+    self._syncing_language = True
+    try:
+      idx = self.languageCombo.findData(code)
+      if idx < 0:
+        self._populate_language_combo()
+        idx = self.languageCombo.findData(code)
+      if idx >= 0 and self.languageCombo.currentIndex() != idx:
+        self.languageCombo.setCurrentIndex(idx)
+    finally:
+      self._syncing_language = False
+    self.retranslate_ui()
+    if self.maskEditorWindow is not None:
+      self.maskEditorWindow.retranslate_ui()
+
+  def _refresh_action_button_texts(self):
+    if self._busy_source == "loading":
+      self.decensorButton.setText(t("main.decensor_button_loading"))
+    elif self._busy_source == "editor":
+      self.decensorButton.setText(t("main.decensor_button_editor_busy"))
+    else:
+      self.decensorButton.setText(t("main.decensor_button"))
+
+    self.cancelButton.setText(
+      t("main.cancel_button_cancelling")
+      if self._cancelling
+      else t("main.cancel_button")
+    )
+
+  def retranslate_ui(self):
+    self.setWindowTitle(t("main.window_title", version=APP_VERSION))
+    self.languageLabel.setText(t("main.language_label"))
+    self.languageCombo.setToolTip(t("main.language_tooltip"))
+
+    self.tutorialLabel.setText(t("main.tutorial"))
+    self.censorTypeGroupBox.setTitle(t("main.censor_type_group"))
+    self.barButton.setText(t("main.bar_censor"))
+    self.mosaicButton.setText(t("main.mosaic_censor"))
+
+    self.modelGroupBox.setTitle(t("main.model_group"))
+    self.pepsiModelButton.setText(t("main.model_pepsi"))
+    self.lamaModelButton.setText(t("main.model_lama"))
+    self.animaModelButton.setText(t("main.model_anima"))
+    self.ttaCheckbox.setText(t("main.use_tta"))
+    self.ttaCheckbox.setToolTip(t("main.use_tta_tooltip"))
+    self.animaSettingsPanel.retranslate_ui()
+    self._refresh_model_availability()
+
+    self.variationsGroupBox.setTitle(t("main.variations_group"))
+    self.cleanInputDirectoryCheckbox.setText(t("main.clean_input_dirs"))
+
+    self.maskEditorButton.setText(t("main.mask_editor_button"))
+    self.maskEditorButton.setToolTip(t("main.mask_editor_tooltip"))
+    self.cancelButton.setToolTip(t("main.cancel_tooltip"))
+    if self._busy_reason_key:
+      self._busy_reason = t(self._busy_reason_key)
+    self._refresh_action_button_texts()
+
+    if self._is_initial_progress:
+      self.progressMessage.setPlainText(t("main.initial_progress_message"))
+    if self._status_is_default:
+      self.statusLabel.setText(t("main.status_initial"))
+    elif self._cancelling:
+      self.statusLabel.setText(t("main.status_cancelling"))
+
   def load_model(self):
-    self._busy_reason = "Loading Model..."
+    self._busy_reason_key = "main.status_loading_model"
+    self._busy_reason = t(self._busy_reason_key)
+    self._busy_source = "loading"
     self._can_cancel = False
+    self._cancelling = False
     self.decensorButton.setEnabled(False)
     self.cancelButton.setEnabled(False)
-    self.decensorButton.setText("Loading Machine Learning Model (Please Wait...)")
+    self._refresh_action_button_texts()
     if self.maskEditorWindow is not None:
-      self.maskEditorWindow.set_busy(True, self._busy_reason, can_cancel=False)
+      self.maskEditorWindow.set_busy(
+        True,
+        self._busy_reason,
+        can_cancel=False,
+        reason_key=self._busy_reason_key,
+      )
     self.decensor.reset_cancel()
     self.decensor.load_only = True
     self.decensor.start()
 
   def processing_finished(self):
+    self._busy_reason_key = ""
     self._busy_reason = ""
+    self._busy_source = ""
     self._can_cancel = False
-    self.decensorButton.setText("Decensor Your Images")
+    self._cancelling = False
+    self._refresh_action_button_texts()
     self.decensorButton.setEnabled(True)
-    self.cancelButton.setText("Cancel")
     self.cancelButton.setEnabled(False)
     if self.maskEditorWindow is not None:
       self.maskEditorWindow.set_busy(False)
@@ -232,10 +342,12 @@ class MainWindow(QWidget):
   def cancel_processing(self):
     if not self.decensor.isRunning() or not self._can_cancel:
       return
+    self._cancelling = True
+    self._status_is_default = False
     self.decensor.request_cancel()
     self.cancelButton.setEnabled(False)
-    self.cancelButton.setText("Cancelling...")
-    self.statusLabel.setText("Cancelling...")
+    self._refresh_action_button_texts()
+    self.statusLabel.setText(t("main.status_cancelling"))
     if self.maskEditorWindow is not None:
       self.maskEditorWindow.set_cancelling()
 
@@ -244,15 +356,23 @@ class MainWindow(QWidget):
     self.signals.update_ProgressBar_SET_VALUE.connect(self._on_progress_value)
     self.signals.update_ProgressBar_MAX_VALUE.connect(self._on_progress_max)
     self.signals.update_ProgressBar_MIN_VALUE.connect(self._on_progress_min)
-    # self.signals.insertText_progressCursor.connect(self.progressCursor.insertText)
-    self.signals.insertText_progressCursor.connect(self.progressMessage.append)
-    self.signals.clear_progressMessage.connect(self.progressMessage.clear)
-    self.signals.appendText_progressMessage.connect(self.progressMessage.append)
+    self.signals.insertText_progressCursor.connect(self._on_progress_log)
+    self.signals.clear_progressMessage.connect(self._on_clear_progress_log)
+    self.signals.appendText_progressMessage.connect(self._on_progress_log)
     self.signals.update_clean_up_input_dirs_flag.connect(
       self.decensor.set_clean_up_input_dirs
     )
 
+  def _on_progress_log(self, text):
+    self._is_initial_progress = False
+    self.progressMessage.append(text)
+
+  def _on_clear_progress_log(self):
+    self._is_initial_progress = False
+    self.progressMessage.clear()
+
   def _on_status_text(self, text):
+    self._status_is_default = False
     self.statusLabel.setText(text)
     if self.maskEditorWindow is not None and self.decensor.isRunning():
       self.maskEditorWindow.set_status_text(text)
@@ -398,12 +518,16 @@ class MainWindow(QWidget):
       self.maskEditorWindow.cancel_requested.connect(self.cancel_processing)
       if self.decensor.isRunning():
         self.maskEditorWindow.set_busy(
-          True, self._busy_reason or "Processing...", can_cancel=self._can_cancel
+          True,
+          self._busy_reason or t("main.status_processing"),
+          can_cancel=self._can_cancel,
+          reason_key=self._busy_reason_key or "main.status_processing",
         )
     else:
       self.maskEditorWindow.apply_synced_settings(
         self.get_decensor_settings(), auto_switch_tool=False
       )
+      self.maskEditorWindow.retranslate_ui()
     self.maskEditorWindow.show()
     self.maskEditorWindow.raise_()
     self.maskEditorWindow.activateWindow()
@@ -411,17 +535,25 @@ class MainWindow(QWidget):
   def start_editor_decensor(self, ori_img, colored_img, output_stem):
     if self.decensor.isRunning():
       return
-    self._busy_reason = "Decensoring..."
+    self._busy_reason_key = "main.status_decensoring"
+    self._busy_reason = t(self._busy_reason_key)
+    self._busy_source = "editor"
     self._can_cancel = True
+    self._cancelling = False
+    self._is_initial_progress = False
     self.decensorButton.setEnabled(False)
-    self.decensorButton.setText("Decensoring (Mask Editor)...")
-    self.cancelButton.setText("Cancel")
+    self._refresh_action_button_texts()
     self.cancelButton.setEnabled(True)
     if self.maskEditorWindow is not None:
-      self.maskEditorWindow.set_busy(True, self._busy_reason, can_cancel=True)
+      self.maskEditorWindow.set_busy(
+        True,
+        self._busy_reason,
+        can_cancel=True,
+        reason_key=self._busy_reason_key,
+      )
 
     self.progressMessage.clear()
-    self.progressCursor.insertText("Decensoring from Mask Editor has begun!\n")
+    self.progressCursor.insertText(t("main.log_editor_started"))
     self._apply_current_settings_to_decensor()
     self.decensor.reset_cancel()
     self.decensor.set_single_image_job(ori_img, colored_img, output_stem)
@@ -442,15 +574,24 @@ class MainWindow(QWidget):
   def decensorClicked(self):
     if self.decensor.isRunning():
       return
-    self._busy_reason = "Decensoring..."
+    self._busy_reason_key = "main.status_decensoring"
+    self._busy_reason = t(self._busy_reason_key)
+    self._busy_source = "batch"
     self._can_cancel = True
+    self._cancelling = False
+    self._is_initial_progress = False
     self.decensorButton.setEnabled(False)
-    self.cancelButton.setText("Cancel")
+    self._refresh_action_button_texts()
     self.cancelButton.setEnabled(True)
     if self.maskEditorWindow is not None:
-      self.maskEditorWindow.set_busy(True, self._busy_reason, can_cancel=True)
+      self.maskEditorWindow.set_busy(
+        True,
+        self._busy_reason,
+        can_cancel=True,
+        reason_key=self._busy_reason_key,
+      )
     self.progressMessage.clear()
-    self.progressCursor.insertText("Decensoring has begun!\n")
+    self.progressCursor.insertText(t("main.log_started"))
 
     self._apply_current_settings_to_decensor()
     self.decensor.reset_cancel()
@@ -469,6 +610,7 @@ class MainWindow(QWidget):
     self.move(qr.topLeft())
 
   def closeEvent(self, event):
+    i18n.remove_listener(self._on_language_changed)
     if self.maskEditorWindow is not None:
       self.maskEditorWindow.close()
     if self.decensor.isRunning():
@@ -477,7 +619,15 @@ class MainWindow(QWidget):
     super().closeEvent(event)
 
 
+def _extract_cli_lang(argv):
+  parser = argparse.ArgumentParser(add_help=False)
+  parser.add_argument("--lang", default=None)
+  known, _ = parser.parse_known_args(argv)
+  return known.lang
+
+
 if __name__ == "__main__":
   app = QApplication(sys.argv)
+  i18n.init_language(cli_lang=_extract_cli_lang(sys.argv[1:]))
   ex = MainWindow()
   sys.exit(app.exec())

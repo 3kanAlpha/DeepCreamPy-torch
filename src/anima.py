@@ -23,6 +23,7 @@ import torch.nn.functional as F
 from PIL import Image
 
 from anima_lllite import ControlNetLLLiteDiT
+from i18n import t as tr
 from libs.utils import (
   prepare_anima_crop,
   resize_anima_prediction,
@@ -255,20 +256,17 @@ def anima_availability(
     ]
     return (
       False,
-      (
-        f"Anima dependencies not installed ({', '.join(missing)}). "
-        "Run `uv sync --locked --group anima` or use an Anima-enabled build."
-      ),
+      tr("models.anima_deps_missing", missing=", ".join(missing)),
     )
   if require_cuda and not anima_cuda_available():
     return (
       False,
-      "Anima requires a CUDA-capable NVIDIA GPU (CUDA is unavailable on this system).",
+      tr("models.anima_cuda_missing"),
     )
   if not anima_tokenizers_available(tokenizers_dir):
     return (
       False,
-      f"Anima offline tokenizers not found under {anima_tokenizers_dir()}.",
+      tr("models.anima_tokenizers_missing", path=anima_tokenizers_dir()),
     )
   paths = resolve_anima_paths(base_dir=base_dir)
   missing_dirs = [name for name, path in paths.items() if path is None]
@@ -277,11 +275,11 @@ def anima_availability(
     folders = ", ".join(f"{root / name}" for name in missing_dirs)
     return (
       False,
-      f"Anima .safetensors weights missing in: {folders}.",
+      tr("models.anima_weights_missing", folders=folders),
     )
   return (
     True,
-    "Anima (Base + 4ch Inpaint LLLite) is available in Bar censor mode (GPU only).",
+    tr("models.anima_available"),
   )
 
 
@@ -870,7 +868,7 @@ class AnimaInpainter:
     # 1. Build 4ch LLLite conditioning tensor & VAE-encoded known-region latents
     self._check_cancel(cancel_check)
     if step_callback:
-      step_callback(0, self.settings.steps, "Encoding image & conditioning...")
+      step_callback(0, self.settings.steps, tr("anima.progress_encoding_image"))
 
     rgb_pm1 = (
       torch.from_numpy(rgb_uint8.astype(np.float32) / 127.5 - 1.0)
@@ -936,7 +934,16 @@ class AnimaInpainter:
         use_cfg_step = do_cfg and (idx < cfg_active_until)
         if step_callback:
           suffix = "" if (not do_cfg or use_cfg_step) else " [CFG=1]"
-          step_callback(idx, total, f"Denoising step {idx + 1}/{total}{suffix}")
+          step_callback(
+            idx,
+            total,
+            tr(
+              "anima.progress_denoising_step",
+              step=idx + 1,
+              total=total,
+              suffix=suffix,
+            ),
+          )
 
         latent_input = latents.to(dtype=self.dtype)
         t_norm = (t.expand(1) / self.scheduler.config.num_train_timesteps).to(
@@ -976,7 +983,11 @@ class AnimaInpainter:
           latents = latents * soft_mask + known_noisy * (1.0 - soft_mask)
 
         if step_callback:
-          step_callback(idx + 1, total, f"Denoising step {idx + 1}/{total}")
+          step_callback(
+            idx + 1,
+            total,
+            tr("anima.progress_denoising_step", step=idx + 1, total=total, suffix=""),
+          )
     finally:
       self.lllite.restore()
       self.lllite.offload_modules_to_cpu()
@@ -987,7 +998,7 @@ class AnimaInpainter:
     # 4. VAE decode
     self._check_cancel(cancel_check)
     if step_callback:
-      step_callback(steps, steps, "Decoding latents...")
+      step_callback(steps, steps, tr("anima.progress_decoding_latents"))
     return self._decode_latents(latents)
 
   def inpaint_crops(
@@ -1018,7 +1029,7 @@ class AnimaInpainter:
     total_steps = len(boxes) * self.settings.steps
 
     if progress_callback:
-      progress_callback(0, total_steps, "Encoding prompts...")
+      progress_callback(0, total_steps, tr("anima.progress_encoding_prompts"))
 
     pos_embeds, neg_embeds = self._encode_prompts(
       self.settings.positive_prompt,
@@ -1048,7 +1059,11 @@ class AnimaInpainter:
           overall = _crop_idx * self.settings.steps + min(
             step_in_crop, self.settings.steps
           )
-          prefix = f"Crop {_crop_idx + 1}/{len(boxes)} - " if len(boxes) > 1 else ""
+          prefix = (
+            tr("anima.progress_crop_prefix", current=_crop_idx + 1, total=len(boxes))
+            if len(boxes) > 1
+            else ""
+          )
           progress_callback(overall, total_steps, f"{prefix}{stage}")
 
       pred_unit = self._denoise_crop(

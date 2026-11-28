@@ -118,6 +118,17 @@ def create_7z_archive(nanazip, stage, archive_path):
   )
 
 
+def copy_lang_files(bundle):
+  source_dir = ROOT / "lang"
+  lang_files = sorted(source_dir.glob("*.json")) if source_dir.is_dir() else []
+  if not lang_files:
+    raise SystemExit(f"Missing language files under {source_dir}.")
+  target_dir = bundle / "lang"
+  target_dir.mkdir(parents=True, exist_ok=True)
+  for lang_file in lang_files:
+    shutil.copy2(lang_file, target_dir / lang_file.name)
+
+
 def copy_notices(bundle):
   for source in (
     "LICENSE.md",
@@ -237,6 +248,7 @@ def main(argv=None, *, with_anima=False):
     )
     for directory in directories:
       (bundle / directory).mkdir(parents=True, exist_ok=True)
+    copy_lang_files(bundle)
     copy_notices(bundle)
 
     nanazip = find_nanazip()

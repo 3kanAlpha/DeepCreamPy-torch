@@ -39,6 +39,7 @@ from PySide6.QtWidgets import (
 )
 
 from anima_ui import AnimaSettingsPanel
+from i18n import t
 from mask_detect import (
   DetectionParams,
   apply_mask_to_image,
@@ -53,9 +54,6 @@ from model import (
 )
 
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
-IMAGE_FILE_FILTER = (
-  "Images (*.png *.jpg *.jpeg *.webp *.bmp);;PNG (*.png);;All Files (*)"
-)
 MAX_UNDO_STATES = 40
 
 TOOL_AUTO_DETECT = "auto_detect"
@@ -457,7 +455,7 @@ class MaskCanvas(QWidget):
       painter.drawText(
         box,
         Qt.AlignmentFlag.AlignCenter,
-        "Drag & Drop an image here\nor click 'Open Image...' / press Ctrl+V",
+        t("mask_editor.canvas_drop_hint"),
       )
       return
 
@@ -539,9 +537,16 @@ class MaskCanvas(QWidget):
         painter.drawEllipse(self._hover_pos, radius_px, radius_px)
 
     if self.view_mode == "result":
-      badge = "BEFORE (Original)" if self.comparing_before else "AFTER (Decensored)"
+      badge = (
+        t("mask_editor.badge_before")
+        if self.comparing_before
+        else t("mask_editor.badge_after")
+      )
       badge_bg = QColor(30, 30, 35, 190)
-      badge_rect = QRectF(12, 12, 160, 26)
+      badge_width = max(
+        140.0, float(painter.fontMetrics().horizontalAdvance(badge)) + 24.0
+      )
+      badge_rect = QRectF(12, 12, badge_width, 26)
       painter.fillRect(badge_rect, badge_bg)
       painter.setPen(QColor("#ffffff"))
       painter.drawText(badge_rect, Qt.AlignmentFlag.AlignCenter, badge)
@@ -715,14 +720,15 @@ class MaskEditorWindow(QWidget):
   def __init__(self, initial_settings: dict, mask_color=(0, 255, 0), parent=None):
     super().__init__(parent)
     self.setAcceptDrops(True)
-    self.setWindowTitle("DeepCreamPy - Mask & Decensor")
-    self.resize(1200, 780)
+    self.resize(1220, 780)
 
     self._syncing_settings = False
     self._busy = False
     self._busy_reason = ""
+    self._busy_reason_key = ""
     self._can_cancel = False
     self._cancelling = False
+    self._status_is_initial = True
 
     self.original_image: Image.Image | None = None
     self.rgb_array: np.ndarray | None = None
@@ -737,7 +743,7 @@ class MaskEditorWindow(QWidget):
     self.apply_synced_settings(initial_settings, auto_switch_tool=False)
     self._apply_tool_for_mode(initial_settings.get("is_mosaic", False))
     self._setup_shortcuts()
-    self._update_ui_state()
+    self.retranslate_ui()
 
   def _build_ui(self):
     root = QVBoxLayout(self)
@@ -748,10 +754,9 @@ class MaskEditorWindow(QWidget):
     toolbar = QHBoxLayout()
     toolbar.setSpacing(6)
 
-    self.openButton = QPushButton("Open Image...")
+    self.openButton = QPushButton()
     self.openButton.clicked.connect(self.open_image_dialog)
-    self.pasteButton = QPushButton("Paste")
-    self.pasteButton.setToolTip("Paste image from clipboard (Ctrl+V)")
+    self.pasteButton = QPushButton()
     self.pasteButton.clicked.connect(self.paste_from_clipboard)
     toolbar.addWidget(self.openButton)
     toolbar.addWidget(self.pasteButton)
@@ -761,25 +766,15 @@ class MaskEditorWindow(QWidget):
     self.toolGroup = QButtonGroup(self)
     self.toolGroup.setExclusive(True)
     self.toolButtons: dict[str, QToolButton] = {}
-    for tool_id, label, tip in (
-      (
-        TOOL_AUTO_DETECT,
-        "Auto Detect",
-        "Drag a rectangle to auto-detect black/white censor regions",
-      ),
-      (
-        TOOL_RECT_FILL,
-        "Rect Fill",
-        "Left-drag to fill rectangle with mask; right-drag to erase rectangle",
-      ),
-      (TOOL_BRUSH, "Brush", "Paint mask manually"),
-      (TOOL_ERASER, "Eraser", "Erase mask manually"),
+    for tool_id in (
+      TOOL_AUTO_DETECT,
+      TOOL_RECT_FILL,
+      TOOL_BRUSH,
+      TOOL_ERASER,
     ):
       btn = QToolButton()
-      btn.setText(label)
       btn.setCheckable(True)
-      btn.setToolTip(tip)
-      btn.clicked.connect(lambda checked, t=tool_id: self._select_tool(t))
+      btn.clicked.connect(lambda checked, t_id=tool_id: self._select_tool(t_id))
       self.toolGroup.addButton(btn)
       self.toolButtons[tool_id] = btn
       toolbar.addWidget(btn)
@@ -787,13 +782,11 @@ class MaskEditorWindow(QWidget):
 
     toolbar.addWidget(self._vsep())
 
-    self.undoButton = QPushButton("Undo")
-    self.undoButton.setToolTip("Undo (Ctrl+Z)")
+    self.undoButton = QPushButton()
     self.undoButton.clicked.connect(self._undo)
-    self.redoButton = QPushButton("Redo")
-    self.redoButton.setToolTip("Redo (Ctrl+Y)")
+    self.redoButton = QPushButton()
     self.redoButton.clicked.connect(self._redo)
-    self.clearMaskButton = QPushButton("Clear Mask")
+    self.clearMaskButton = QPushButton()
     self.clearMaskButton.clicked.connect(self._clear_mask)
     toolbar.addWidget(self.undoButton)
     toolbar.addWidget(self.redoButton)
@@ -803,17 +796,13 @@ class MaskEditorWindow(QWidget):
 
     self.zoomOutButton = QToolButton()
     self.zoomOutButton.setText("-")
-    self.zoomOutButton.setToolTip("Zoom Out")
     self.zoomOutButton.clicked.connect(
       lambda: self.canvas.set_zoom_around(self.canvas.zoom / 1.25)
     )
     self.fitButton = QToolButton()
-    self.fitButton.setText("Fit")
-    self.fitButton.setToolTip("Fit image to window (0)")
     self.fitButton.clicked.connect(lambda: self.canvas.fit_to_view())
     self.zoomInButton = QToolButton()
     self.zoomInButton.setText("+")
-    self.zoomInButton.setToolTip("Zoom In")
     self.zoomInButton.clicked.connect(
       lambda: self.canvas.set_zoom_around(self.canvas.zoom * 1.25)
     )
@@ -829,11 +818,9 @@ class MaskEditorWindow(QWidget):
 
     # View toggle & Before/After compare
     self.editViewButton = QToolButton()
-    self.editViewButton.setText("Edit")
     self.editViewButton.setCheckable(True)
     self.editViewButton.setChecked(True)
     self.resultViewButton = QToolButton()
-    self.resultViewButton.setText("Result")
     self.resultViewButton.setCheckable(True)
     self.viewGroup = QButtonGroup(self)
     self.viewGroup.setExclusive(True)
@@ -842,13 +829,12 @@ class MaskEditorWindow(QWidget):
     self.editViewButton.clicked.connect(lambda: self._set_view_mode("edit"))
     self.resultViewButton.clicked.connect(lambda: self._set_view_mode("result"))
 
-    self.compareButton = QPushButton("Hold to Compare")
-    self.compareButton.setToolTip("Press and hold to view original image")
+    self.compareButton = QPushButton()
     self.compareButton.pressed.connect(lambda: self.canvas.set_comparing_before(True))
     self.compareButton.released.connect(lambda: self.canvas.set_comparing_before(False))
 
     self.variationCombo = QComboBox()
-    self.variationCombo.setMinimumWidth(95)
+    self.variationCombo.setMinimumWidth(110)
     self.variationCombo.currentIndexChanged.connect(self._select_variation)
 
     toolbar.addWidget(self.editViewButton)
@@ -877,14 +863,14 @@ class MaskEditorWindow(QWidget):
     sidebar.setSpacing(8)
 
     # 1. Auto Detect group
-    self.detectGroup = QGroupBox("Auto Detect (Bar)")
+    self.detectGroup = QGroupBox()
     detect_layout = QVBoxLayout(self.detectGroup)
     detect_layout.setSpacing(6)
 
     mode_row = QHBoxLayout()
-    self.detectBlackRadio = QRadioButton("Black")
-    self.detectWhiteRadio = QRadioButton("White")
-    self.detectBothRadio = QRadioButton("Both")
+    self.detectBlackRadio = QRadioButton()
+    self.detectWhiteRadio = QRadioButton()
+    self.detectBothRadio = QRadioButton()
     self.detectBlackRadio.setChecked(True)
     for radio in (
       self.detectBlackRadio,
@@ -897,31 +883,31 @@ class MaskEditorWindow(QWidget):
 
     sliders_grid = QGridLayout()
     sliders_grid.setSpacing(4)
-    self.blackThreshSlider, self.blackThreshValue = self._add_slider_row(
-      sliders_grid, 0, "Black Max", 0, 160, 50, self._on_detect_params_changed
+    self.blackThreshLabel, self.blackThreshSlider, self.blackThreshValue = (
+      self._add_slider_row(
+        sliders_grid, 0, "", 0, 160, 50, self._on_detect_params_changed
+      )
     )
-    self.whiteThreshSlider, self.whiteThreshValue = self._add_slider_row(
-      sliders_grid, 1, "White Min", 120, 255, 220, self._on_detect_params_changed
+    self.whiteThreshLabel, self.whiteThreshSlider, self.whiteThreshValue = (
+      self._add_slider_row(
+        sliders_grid, 1, "", 120, 255, 220, self._on_detect_params_changed
+      )
     )
-    self.maxSatSlider, self.maxSatValue = self._add_slider_row(
-      sliders_grid, 2, "Max Chroma", 0, 120, 35, self._on_detect_params_changed
+    self.maxSatLabel, self.maxSatSlider, self.maxSatValue = self._add_slider_row(
+      sliders_grid, 2, "", 0, 120, 35, self._on_detect_params_changed
     )
-    self.minThickSlider, self.minThickValue = self._add_slider_row(
-      sliders_grid, 3, "Line Filter", 0, 12, 3, self._on_detect_params_changed
+    self.minThickLabel, self.minThickSlider, self.minThickValue = self._add_slider_row(
+      sliders_grid, 3, "", 0, 12, 3, self._on_detect_params_changed
     )
-    self.minThickSlider.setToolTip(
-      "Minimum bar thickness (px) to exclude thin anime lineart. 0 disables filtering."
+    self.dilationLabel, self.dilationSlider, self.dilationValue = self._add_slider_row(
+      sliders_grid, 4, "", 0, 10, 2, self._on_detect_params_changed
     )
-    self.dilationSlider, self.dilationValue = self._add_slider_row(
-      sliders_grid, 4, "Dilation", 0, 10, 2, self._on_detect_params_changed
-    )
-    self.dilationSlider.setToolTip("Expand detected mask borders (px).")
     detect_layout.addLayout(sliders_grid)
 
     pending_row = QHBoxLayout()
-    self.applyPendingButton = QPushButton("Apply (Enter)")
+    self.applyPendingButton = QPushButton()
     self.applyPendingButton.clicked.connect(self._commit_pending)
-    self.cancelPendingButton = QPushButton("Cancel (Esc)")
+    self.cancelPendingButton = QPushButton()
     self.cancelPendingButton.clicked.connect(self._cancel_pending)
     pending_row.addWidget(self.applyPendingButton)
     pending_row.addWidget(self.cancelPendingButton)
@@ -930,26 +916,27 @@ class MaskEditorWindow(QWidget):
     sidebar.addWidget(self.detectGroup)
 
     # 2. Brush & Display group
-    display_group = QGroupBox("Brush & Display")
-    display_grid = QGridLayout(display_group)
+    self.displayGroup = QGroupBox()
+    display_grid = QGridLayout(self.displayGroup)
     display_grid.setSpacing(4)
-    self.brushSizeSlider, self.brushSizeValue = self._add_slider_row(
-      display_grid, 0, "Brush Size", 1, 120, 20, self._on_brush_size_changed
+    self.brushSizeLabel, self.brushSizeSlider, self.brushSizeValue = (
+      self._add_slider_row(display_grid, 0, "", 1, 120, 20, self._on_brush_size_changed)
     )
-    self.opacitySlider, self.opacityValue = self._add_slider_row(
-      display_grid, 1, "Mask Alpha", 10, 100, 55, self._on_opacity_changed, suffix="%"
+    self.opacityLabel, self.opacitySlider, self.opacityValue = self._add_slider_row(
+      display_grid, 1, "", 10, 100, 55, self._on_opacity_changed, suffix="%"
     )
-    sidebar.addWidget(display_group)
+    sidebar.addWidget(self.displayGroup)
 
     # 3. Decensor Settings group (two-way synced with MainWindow)
-    settings_group = QGroupBox("Decensor Settings")
-    settings_layout = QVBoxLayout(settings_group)
+    self.settingsGroup = QGroupBox()
+    settings_layout = QVBoxLayout(self.settingsGroup)
     settings_layout.setSpacing(6)
 
     censor_row = QHBoxLayout()
-    censor_row.addWidget(QLabel("Type:"))
-    self.barRadio = QRadioButton("Bar")
-    self.mosaicRadio = QRadioButton("Mosaic")
+    self.censorTypeLabel = QLabel()
+    censor_row.addWidget(self.censorTypeLabel)
+    self.barRadio = QRadioButton()
+    self.mosaicRadio = QRadioButton()
     self.censorBtnGroup = QButtonGroup(self)
     self.censorBtnGroup.addButton(self.barRadio)
     self.censorBtnGroup.addButton(self.mosaicRadio)
@@ -960,11 +947,11 @@ class MaskEditorWindow(QWidget):
     settings_layout.addLayout(censor_row)
 
     model_row = QHBoxLayout()
-    model_row.addWidget(QLabel("Model:"))
+    self.modelLabel = QLabel()
+    model_row.addWidget(self.modelLabel)
     self.pepsiRadio = QRadioButton("PEPSI")
     self.lamaRadio = QRadioButton("LaMa")
     self.animaRadio = QRadioButton("Anima")
-    self.lamaRadio.setToolTip("LaMa is available in Bar censor mode only.")
     self.modelBtnGroup = QButtonGroup(self)
     self.modelBtnGroup.addButton(self.pepsiRadio)
     self.modelBtnGroup.addButton(self.lamaRadio)
@@ -979,11 +966,12 @@ class MaskEditorWindow(QWidget):
     settings_layout.addLayout(model_row)
 
     tta_var_row = QHBoxLayout()
-    self.ttaCheckbox = QCheckBox("Use TTA")
+    self.ttaCheckbox = QCheckBox()
     self.ttaCheckbox.toggled.connect(self._on_decensor_settings_ui_changed)
     tta_var_row.addWidget(self.ttaCheckbox)
     tta_var_row.addStretch(1)
-    tta_var_row.addWidget(QLabel("Variations:"))
+    self.variationsLabel = QLabel()
+    tta_var_row.addWidget(self.variationsLabel)
     self.variationsCombo = QComboBox()
     self.variationsCombo.addItems(["1", "2", "4"])
     self.variationsCombo.currentIndexChanged.connect(
@@ -992,7 +980,7 @@ class MaskEditorWindow(QWidget):
     tta_var_row.addWidget(self.variationsCombo)
     settings_layout.addLayout(tta_var_row)
 
-    sidebar.addWidget(settings_group)
+    sidebar.addWidget(self.settingsGroup)
 
     self.animaSettingsPanel = AnimaSettingsPanel(compact=True)
     self.animaSettingsPanel.setVisible(False)
@@ -1002,21 +990,20 @@ class MaskEditorWindow(QWidget):
     sidebar.addWidget(self.animaSettingsPanel)
 
     # 4. Action buttons
-    actions_group = QGroupBox("Actions")
-    actions_layout = QVBoxLayout(actions_group)
+    self.actionsGroup = QGroupBox()
+    actions_layout = QVBoxLayout(self.actionsGroup)
     actions_layout.setSpacing(6)
 
     run_cancel_row = QHBoxLayout()
-    self.decensorButton = QPushButton("Decensor")
+    self.decensorButton = QPushButton()
     self.decensorButton.setMinimumHeight(38)
     self.decensorButton.setStyleSheet("font-weight: bold;")
     self.decensorButton.clicked.connect(self._on_decensor_clicked)
     run_cancel_row.addWidget(self.decensorButton, 2)
 
-    self.cancelButton = QPushButton("Cancel")
+    self.cancelButton = QPushButton()
     self.cancelButton.setMinimumHeight(38)
     self.cancelButton.setEnabled(False)
-    self.cancelButton.setToolTip("Cancel the currently running decensoring job.")
     self.cancelButton.clicked.connect(self._on_cancel_clicked)
     run_cancel_row.addWidget(self.cancelButton, 1)
     actions_layout.addLayout(run_cancel_row)
@@ -1026,30 +1013,135 @@ class MaskEditorWindow(QWidget):
     self.progressBar.setValue(0)
     actions_layout.addWidget(self.progressBar)
 
-    self.statusLabel = QLabel("Drop or open an image to begin.")
+    self.statusLabel = QLabel()
     self.statusLabel.setWordWrap(True)
     actions_layout.addWidget(self.statusLabel)
 
-    self.saveResultButton = QPushButton("Save Result As...")
+    self.saveResultButton = QPushButton()
     self.saveResultButton.clicked.connect(self.save_result_as)
     actions_layout.addWidget(self.saveResultButton)
 
-    self.saveMaskButton = QPushButton("Save Masked PNG...")
+    self.saveMaskButton = QPushButton()
     self.saveMaskButton.clicked.connect(self.save_masked_png)
     actions_layout.addWidget(self.saveMaskButton)
 
-    sidebar.addWidget(actions_group)
+    sidebar.addWidget(self.actionsGroup)
     sidebar.addStretch(1)
 
     scroll = QScrollArea()
     scroll.setWidgetResizable(True)
     scroll.setFrameShape(QFrame.Shape.NoFrame)
     scroll.setWidget(sidebar_container)
-    scroll.setFixedWidth(300)
+    scroll.setFixedWidth(320)
     scroll.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
     body.addWidget(scroll)
 
     root.addLayout(body, 1)
+
+  def _update_window_title(self):
+    if self.original_image is not None:
+      title_name = (
+        self.source_path.name if self.source_path is not None else self.output_stem
+      )
+      self.setWindowTitle(t("mask_editor.window_title_with_file", name=title_name))
+    else:
+      self.setWindowTitle(t("mask_editor.window_title"))
+
+  def retranslate_ui(self):
+    self._update_window_title()
+
+    self.openButton.setText(t("mask_editor.open_image"))
+    self.pasteButton.setText(t("mask_editor.paste"))
+    self.pasteButton.setToolTip(t("mask_editor.paste_tooltip"))
+
+    tool_specs = {
+      TOOL_AUTO_DETECT: (
+        "mask_editor.tool_auto_detect",
+        "mask_editor.tool_auto_detect_tooltip",
+      ),
+      TOOL_RECT_FILL: (
+        "mask_editor.tool_rect_fill",
+        "mask_editor.tool_rect_fill_tooltip",
+      ),
+      TOOL_BRUSH: ("mask_editor.tool_brush", "mask_editor.tool_brush_tooltip"),
+      TOOL_ERASER: ("mask_editor.tool_eraser", "mask_editor.tool_eraser_tooltip"),
+    }
+    for tool_id, (label_key, tip_key) in tool_specs.items():
+      btn = self.toolButtons[tool_id]
+      btn.setText(t(label_key))
+      btn.setToolTip(t(tip_key))
+
+    self.undoButton.setText(t("mask_editor.undo"))
+    self.undoButton.setToolTip(t("mask_editor.undo_tooltip"))
+    self.redoButton.setText(t("mask_editor.redo"))
+    self.redoButton.setToolTip(t("mask_editor.redo_tooltip"))
+    self.clearMaskButton.setText(t("mask_editor.clear_mask"))
+
+    self.zoomOutButton.setToolTip(t("mask_editor.zoom_out_tooltip"))
+    self.fitButton.setText(t("mask_editor.fit"))
+    self.fitButton.setToolTip(t("mask_editor.fit_tooltip"))
+    self.zoomInButton.setToolTip(t("mask_editor.zoom_in_tooltip"))
+
+    self.editViewButton.setText(t("mask_editor.view_edit"))
+    self.resultViewButton.setText(t("mask_editor.view_result"))
+    self.compareButton.setText(t("mask_editor.hold_to_compare"))
+    self.compareButton.setToolTip(t("mask_editor.hold_to_compare_tooltip"))
+
+    if self.result_images:
+      current_idx = self.variationCombo.currentIndex()
+      self.variationCombo.blockSignals(True)
+      for i in range(self.variationCombo.count()):
+        self.variationCombo.setItemText(i, t("mask_editor.variation_item", index=i))
+      if 0 <= current_idx < self.variationCombo.count():
+        self.variationCombo.setCurrentIndex(current_idx)
+      self.variationCombo.blockSignals(False)
+
+    self.detectGroup.setTitle(t("mask_editor.detect_group"))
+    self.detectBlackRadio.setText(t("mask_editor.detect_black"))
+    self.detectWhiteRadio.setText(t("mask_editor.detect_white"))
+    self.detectBothRadio.setText(t("mask_editor.detect_both"))
+
+    self.blackThreshLabel.setText(t("mask_editor.black_max"))
+    self.whiteThreshLabel.setText(t("mask_editor.white_min"))
+    self.maxSatLabel.setText(t("mask_editor.max_chroma"))
+    self.minThickLabel.setText(t("mask_editor.line_filter"))
+    self.minThickSlider.setToolTip(t("mask_editor.line_filter_tooltip"))
+    self.dilationLabel.setText(t("mask_editor.dilation"))
+    self.dilationSlider.setToolTip(t("mask_editor.dilation_tooltip"))
+
+    self.applyPendingButton.setText(t("mask_editor.apply_pending"))
+    self.cancelPendingButton.setText(t("mask_editor.cancel_pending"))
+
+    self.displayGroup.setTitle(t("mask_editor.brush_display_group"))
+    self.brushSizeLabel.setText(t("mask_editor.brush_size"))
+    self.opacityLabel.setText(t("mask_editor.mask_alpha"))
+
+    self.settingsGroup.setTitle(t("mask_editor.decensor_settings_group"))
+    self.censorTypeLabel.setText(t("mask_editor.type_label"))
+    self.barRadio.setText(t("mask_editor.type_bar"))
+    self.mosaicRadio.setText(t("mask_editor.type_mosaic"))
+    self.modelLabel.setText(t("mask_editor.model_label"))
+    self.ttaCheckbox.setText(t("mask_editor.use_tta"))
+    self.variationsLabel.setText(t("mask_editor.variations_label"))
+
+    self.animaSettingsPanel.retranslate_ui()
+    self._refresh_lama_availability()
+    self._refresh_anima_availability()
+
+    self.actionsGroup.setTitle(t("mask_editor.actions_group"))
+    self.cancelButton.setToolTip(t("mask_editor.cancel_tooltip"))
+    self.saveResultButton.setText(t("mask_editor.save_result_as"))
+    self.saveMaskButton.setText(t("mask_editor.save_masked_png"))
+
+    if self._busy_reason_key:
+      self._busy_reason = t(self._busy_reason_key)
+    if self._status_is_initial:
+      self.statusLabel.setText(t("mask_editor.status_initial"))
+    elif self._cancelling:
+      self.statusLabel.setText(t("mask_editor.status_cancelling"))
+
+    self._update_ui_state()
+    self.canvas.update()
 
   @staticmethod
   def _vsep() -> QFrame:
@@ -1069,7 +1161,7 @@ class MaskEditorWindow(QWidget):
     slot,
     *,
     suffix: str = "",
-  ) -> tuple[QSlider, QLabel]:
+  ) -> tuple[QLabel, QSlider, QLabel]:
     label = QLabel(label_text)
     slider = QSlider(Qt.Orientation.Horizontal)
     slider.setRange(minimum, maximum)
@@ -1086,7 +1178,7 @@ class MaskEditorWindow(QWidget):
     grid.addWidget(label, row, 0)
     grid.addWidget(slider, row, 1)
     grid.addWidget(value_label, row, 2)
-    return slider, value_label
+    return label, slider, value_label
 
   def _setup_shortcuts(self):
     QShortcut(QKeySequence.StandardKey.Open, self, activated=self.open_image_dialog)
@@ -1213,10 +1305,17 @@ class MaskEditorWindow(QWidget):
 
   # --- Image loading ---
 
+  def _set_status_message(self, text: str, *, is_initial: bool = False):
+    self._status_is_initial = is_initial
+    self.statusLabel.setText(text)
+
   def open_image_dialog(self):
     start_dir = str(self.source_path.parent) if self.source_path else ""
     file_path, _ = QFileDialog.getOpenFileName(
-      self, "Open Image", start_dir, IMAGE_FILE_FILTER
+      self,
+      t("mask_editor.dialog_open_title"),
+      start_dir,
+      t("mask_editor.dialog_open_filter"),
     )
     if file_path:
       self.load_image_from_path(file_path)
@@ -1232,7 +1331,9 @@ class MaskEditorWindow(QWidget):
         else:
           image = image.copy()
     except (OSError, ValueError, Image.DecompressionBombError) as error:
-      QMessageBox.warning(self, "Failed to Open Image", f"{path}\n{error}")
+      QMessageBox.warning(
+        self, t("mask_editor.dialog_open_failed_title"), f"{path}\n{error}"
+      )
       return
 
     self._set_loaded_image(image, path.stem, source_path=path)
@@ -1241,7 +1342,7 @@ class MaskEditorWindow(QWidget):
     clipboard = QApplication.clipboard()
     qimage = clipboard.image()
     if qimage.isNull():
-      self.statusLabel.setText("Clipboard does not contain an image.")
+      self._set_status_message(t("mask_editor.status_clipboard_empty"))
       return
     image = qimage_to_pil(qimage)
     stem = f"clipboard_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
@@ -1263,8 +1364,15 @@ class MaskEditorWindow(QWidget):
     self.canvas.load_image(image)
     self.editViewButton.setChecked(True)
     title_name = source_path.name if source_path is not None else output_stem
-    self.setWindowTitle(f"DeepCreamPy - Mask & Decensor [{title_name}]")
-    self.statusLabel.setText(f"Loaded {title_name} ({image.width} x {image.height})")
+    self._update_window_title()
+    self._set_status_message(
+      t(
+        "mask_editor.status_loaded",
+        name=title_name,
+        width=image.width,
+        height=image.height,
+      )
+    )
     self.progressBar.setValue(0)
     self._update_ui_state()
 
@@ -1303,9 +1411,7 @@ class MaskEditorWindow(QWidget):
     clamped, roi_mask = detect_censor_in_rect(self.rgb_array, rect, params)
     self.canvas.set_pending_detection(clamped, roi_mask)
     detected_px = int(roi_mask.sum())
-    self.statusLabel.setText(
-      f"Detected {detected_px:,} px in selection. Adjust sliders or press Enter to apply."
-    )
+    self._set_status_message(t("mask_editor.status_detected", count=detected_px))
     self._update_ui_state()
 
   def _on_detect_params_changed(self):
@@ -1322,13 +1428,13 @@ class MaskEditorWindow(QWidget):
   def _commit_pending(self):
     if self.canvas.has_pending():
       self.canvas.commit_pending()
-      self.statusLabel.setText("Applied detected mask.")
+      self._set_status_message(t("mask_editor.status_applied_mask"))
       self._update_ui_state()
 
   def _cancel_pending(self):
     if self.canvas.has_pending():
       self.canvas.clear_pending()
-      self.statusLabel.setText("Canceled pending detection.")
+      self._set_status_message(t("mask_editor.status_canceled_detection"))
       self._update_ui_state()
 
   def _on_pending_changed(self, has_pending: bool):
@@ -1377,24 +1483,32 @@ class MaskEditorWindow(QWidget):
 
   # --- Decensor execution & Progress ---
 
-  def set_busy(self, busy: bool, reason: str = "", *, can_cancel: bool = False):
+  def set_busy(
+    self,
+    busy: bool,
+    reason: str = "",
+    *,
+    can_cancel: bool = False,
+    reason_key: str = "",
+  ):
     self._busy = busy
-    self._busy_reason = reason
+    self._busy_reason_key = reason_key if busy else ""
+    self._busy_reason = t(reason_key) if (busy and reason_key) else reason
     self._can_cancel = bool(busy and can_cancel)
     if not busy:
       self._cancelling = False
-    if busy and reason:
-      self.statusLabel.setText(reason)
+    if busy and self._busy_reason:
+      self._set_status_message(self._busy_reason)
     self._update_ui_state()
 
   def set_cancelling(self):
     self._cancelling = True
-    self.statusLabel.setText("Cancelling...")
+    self._set_status_message(t("mask_editor.status_cancelling"))
     self._update_ui_state()
 
   def set_status_text(self, text: str):
     if text:
-      self.statusLabel.setText(text)
+      self._set_status_message(text)
 
   def set_progress_range(self, minimum: int, maximum: int):
     self.progressBar.setRange(minimum, maximum)
@@ -1420,8 +1534,8 @@ class MaskEditorWindow(QWidget):
     if not self.canvas.mask.any():
       QMessageBox.information(
         self,
-        "No Mask Regions",
-        "Please mark at least one region with Auto Detect, Rect Fill, or Brush before decensoring.",
+        t("mask_editor.dialog_no_mask_title"),
+        t("mask_editor.dialog_no_mask_body"),
       )
       return
 
@@ -1435,7 +1549,7 @@ class MaskEditorWindow(QWidget):
     self.variationCombo.blockSignals(True)
     self.variationCombo.clear()
     for i in range(len(self.result_images)):
-      self.variationCombo.addItem(f"Variation #{i}")
+      self.variationCombo.addItem(t("mask_editor.variation_item", index=i))
     self.variationCombo.setCurrentIndex(0)
     self.variationCombo.blockSignals(False)
 
@@ -1443,21 +1557,31 @@ class MaskEditorWindow(QWidget):
       self.canvas.set_result_pixmap(pil_to_qpixmap(self.result_images[0]))
       self._set_view_mode("result")
       if len(self.saved_paths) == 1:
-        self.statusLabel.setText(f"Saved: {self.saved_paths[0]}")
+        self._set_status_message(
+          t("mask_editor.status_saved_single", path=self.saved_paths[0])
+        )
       else:
-        self.statusLabel.setText(
-          f"Saved {len(self.saved_paths)} variations to {Path(self.saved_paths[0]).parent}"
+        self._set_status_message(
+          t(
+            "mask_editor.status_saved_multiple",
+            count=len(self.saved_paths),
+            directory=Path(self.saved_paths[0]).parent,
+          )
         )
     self._update_ui_state()
 
   def on_decensor_failed(self, error_message: str):
-    self.statusLabel.setText(f"Decensor failed: {error_message}")
-    QMessageBox.warning(self, "Decensor Failed", error_message)
+    self._set_status_message(
+      t("mask_editor.status_decensor_failed", error=error_message)
+    )
+    QMessageBox.warning(
+      self, t("mask_editor.dialog_decensor_failed_title"), error_message
+    )
     self._update_ui_state()
 
   def on_decensor_cancelled(self):
     self._cancelling = False
-    self.statusLabel.setText("Decensoring cancelled.")
+    self._set_status_message(t("mask_editor.status_decensor_cancelled"))
     self._update_ui_state()
 
   # --- Manual Save actions ---
@@ -1471,7 +1595,10 @@ class MaskEditorWindow(QWidget):
     default_dir = str(self.source_path.parent) if self.source_path else ""
     initial = str(Path(default_dir) / default_name) if default_dir else default_name
     file_path, _ = QFileDialog.getSaveFileName(
-      self, "Save Result As", initial, "PNG (*.png);;JPEG (*.jpg *.jpeg);;WebP (*.webp)"
+      self,
+      t("mask_editor.dialog_save_result_title"),
+      initial,
+      t("mask_editor.dialog_save_result_filter"),
     )
     if not file_path:
       return
@@ -1481,9 +1608,9 @@ class MaskEditorWindow(QWidget):
       if out_path.suffix.lower() in (".jpg", ".jpeg"):
         img_to_save = result.convert("RGB")
       img_to_save.save(out_path)
-      self.statusLabel.setText(f"Saved result to {out_path}")
+      self._set_status_message(t("mask_editor.status_saved_result_to", path=out_path))
     except OSError as error:
-      QMessageBox.warning(self, "Save Failed", str(error))
+      QMessageBox.warning(self, t("mask_editor.dialog_save_failed_title"), str(error))
 
   def save_masked_png(self):
     if self.original_image is None or self.canvas.mask is None:
@@ -1494,16 +1621,19 @@ class MaskEditorWindow(QWidget):
     default_dir = str(self.source_path.parent) if self.source_path else ""
     initial = str(Path(default_dir) / default_name) if default_dir else default_name
     file_path, _ = QFileDialog.getSaveFileName(
-      self, "Save Masked PNG", initial, "PNG (*.png)"
+      self,
+      t("mask_editor.dialog_save_mask_title"),
+      initial,
+      t("mask_editor.dialog_save_mask_filter"),
     )
     if not file_path:
       return
     try:
       colored = self._build_colored_image()
       colored.save(file_path, format="PNG")
-      self.statusLabel.setText(f"Saved masked PNG to {file_path}")
+      self._set_status_message(t("mask_editor.status_saved_mask_to", path=file_path))
     except OSError as error:
-      QMessageBox.warning(self, "Save Failed", str(error))
+      QMessageBox.warning(self, t("mask_editor.dialog_save_failed_title"), str(error))
 
   # --- UI State ---
 
@@ -1530,14 +1660,20 @@ class MaskEditorWindow(QWidget):
 
     self.decensorButton.setEnabled(has_img and not self._busy)
     if self._busy:
-      self.decensorButton.setText(self._busy_reason or "Processing...")
+      self.decensorButton.setText(
+        self._busy_reason or t("mask_editor.status_processing")
+      )
     else:
-      self.decensorButton.setText("Decensor")
+      self.decensorButton.setText(t("mask_editor.decensor_button"))
 
     self.cancelButton.setEnabled(
       self._busy and self._can_cancel and not self._cancelling
     )
-    self.cancelButton.setText("Cancelling..." if self._cancelling else "Cancel")
+    self.cancelButton.setText(
+      t("mask_editor.cancel_button_cancelling")
+      if self._cancelling
+      else t("mask_editor.cancel_button")
+    )
 
     self.saveResultButton.setEnabled(has_results)
     self.saveMaskButton.setEnabled(has_img)
