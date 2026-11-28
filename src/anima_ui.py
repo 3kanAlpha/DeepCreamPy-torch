@@ -18,12 +18,15 @@ from PySide6.QtWidgets import (
 )
 
 from model import (
+  ANIMA_DEFAULT_CACHE_PROMPT,
   ANIMA_DEFAULT_CFG,
+  ANIMA_DEFAULT_CFG_SKIP_TAIL,
   ANIMA_DEFAULT_LLLITE_STRENGTH,
   ANIMA_DEFAULT_MAX_SIZE,
   ANIMA_DEFAULT_NEGATIVE_PROMPT,
   ANIMA_DEFAULT_SEED,
   ANIMA_DEFAULT_STEPS,
+  ANIMA_MAX_CFG_SKIP_TAIL,
   AnimaSettings,
   anima_default_fp8_storage,
   list_anima_files,
@@ -129,6 +132,17 @@ class AnimaSettingsPanel(QGroupBox):
     self.maxSizeCombo.setCurrentText(str(ANIMA_DEFAULT_MAX_SIZE))
     self.maxSizeCombo.currentIndexChanged.connect(self._emit_changed)
 
+    self.cfgSkipTailSpin = QSpinBox()
+    self.cfgSkipTailSpin.setRange(0, round(ANIMA_MAX_CFG_SKIP_TAIL * 100))
+    self.cfgSkipTailSpin.setSingleStep(1)
+    self.cfgSkipTailSpin.setSuffix("%")
+    self.cfgSkipTailSpin.setValue(round(ANIMA_DEFAULT_CFG_SKIP_TAIL * 100))
+    self.cfgSkipTailSpin.setToolTip(
+      "Run the final N% of denoising steps with CFG=1.0 to speed up inference "
+      "(0% disables; e.g. 20% skips CFG on the last 20% of steps)."
+    )
+    self.cfgSkipTailSpin.valueChanged.connect(self._emit_changed)
+
     self.fp8Checkbox = QCheckBox("FP8 storage (faster on 8GB VRAM)")
     self.fp8Checkbox.setChecked(anima_default_fp8_storage())
     self.fp8Checkbox.setToolTip(
@@ -136,6 +150,14 @@ class AnimaSettingsPanel(QGroupBox):
       "VRAM in half and avoid block offloading on 8GB GPUs (auto-enabled on <=10.5 GiB GPUs)."
     )
     self.fp8Checkbox.toggled.connect(self._emit_changed)
+
+    self.cachePromptCheckbox = QCheckBox("Cache prompt embeddings")
+    self.cachePromptCheckbox.setChecked(ANIMA_DEFAULT_CACHE_PROMPT)
+    self.cachePromptCheckbox.setToolTip(
+      "Cache encoded prompt embeddings in CPU RAM to skip Qwen3 re-encoding across "
+      "variations, batch images, or retries with the same prompt."
+    )
+    self.cachePromptCheckbox.toggled.connect(self._emit_changed)
 
     self.diffusionCombo = QComboBox()
     self.diffusionCombo.setToolTip(
@@ -153,6 +175,7 @@ class AnimaSettingsPanel(QGroupBox):
       rows = [
         ("Steps:", self.stepsSpin),
         ("CFG:", self.cfgSpin),
+        ("Tail CFG=1:", self.cfgSkipTailSpin),
         ("LLLite:", self.strengthSpin),
         ("Seed:", self.seedSpin),
         ("Max Size:", self.maxSizeCombo),
@@ -163,6 +186,7 @@ class AnimaSettingsPanel(QGroupBox):
         adv_grid.addWidget(QLabel(label), r, 0)
         adv_grid.addWidget(widget, r, 1)
       adv_grid.addWidget(self.fp8Checkbox, len(rows), 0, 1, 2)
+      adv_grid.addWidget(self.cachePromptCheckbox, len(rows) + 1, 0, 1, 2)
     else:
       adv_grid.addWidget(QLabel("Steps:"), 0, 0)
       adv_grid.addWidget(self.stepsSpin, 0, 1)
@@ -175,12 +199,16 @@ class AnimaSettingsPanel(QGroupBox):
       adv_grid.addWidget(self.seedSpin, 1, 1)
       adv_grid.addWidget(QLabel("Max Size:"), 1, 2)
       adv_grid.addWidget(self.maxSizeCombo, 1, 3)
-      adv_grid.addWidget(self.fp8Checkbox, 1, 4, 1, 2)
+      adv_grid.addWidget(QLabel("Tail CFG=1:"), 1, 4)
+      adv_grid.addWidget(self.cfgSkipTailSpin, 1, 5)
 
-      adv_grid.addWidget(QLabel("Diffusion:"), 2, 0)
-      adv_grid.addWidget(self.diffusionCombo, 2, 1, 1, 2)
-      adv_grid.addWidget(QLabel("ControlNet:"), 2, 3)
-      adv_grid.addWidget(self.controlnetCombo, 2, 4, 1, 2)
+      adv_grid.addWidget(self.fp8Checkbox, 2, 0, 1, 3)
+      adv_grid.addWidget(self.cachePromptCheckbox, 2, 3, 1, 3)
+
+      adv_grid.addWidget(QLabel("Diffusion:"), 3, 0)
+      adv_grid.addWidget(self.diffusionCombo, 3, 1, 1, 2)
+      adv_grid.addWidget(QLabel("ControlNet:"), 3, 3)
+      adv_grid.addWidget(self.controlnetCombo, 3, 4, 1, 2)
 
     root.addWidget(self.advancedContainer)
 
@@ -230,6 +258,8 @@ class AnimaSettingsPanel(QGroupBox):
       seed=self.seedSpin.value(),
       max_size=int(self.maxSizeCombo.currentText()),
       use_fp8_storage=self.fp8Checkbox.isChecked(),
+      cache_prompt_embeds=self.cachePromptCheckbox.isChecked(),
+      cfg_skip_tail=self.cfgSkipTailSpin.value() / 100.0,
       diffusion_file=diff_file,
       controlnet_file=ctrl_file,
     ).to_dict()
@@ -247,6 +277,8 @@ class AnimaSettingsPanel(QGroupBox):
       self.strengthSpin.setValue(settings.lllite_strength)
       self.seedSpin.setValue(settings.seed)
       self.fp8Checkbox.setChecked(bool(settings.use_fp8_storage))
+      self.cachePromptCheckbox.setChecked(bool(settings.cache_prompt_embeds))
+      self.cfgSkipTailSpin.setValue(round(settings.cfg_skip_tail * 100))
       idx = self.maxSizeCombo.findText(str(settings.max_size))
       if idx >= 0:
         self.maxSizeCombo.setCurrentIndex(idx)

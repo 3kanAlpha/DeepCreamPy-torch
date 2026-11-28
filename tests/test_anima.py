@@ -22,11 +22,13 @@ import config
 import model
 from anima import (
   ANIMA_DEFAULT_NEGATIVE_PROMPT,
+  ANIMA_DEFAULT_STEPS,
   ANIMA_SUBDIRS,
   AnimaCancelledError,
   AnimaInpainter,
   AnimaSettings,
   _build_soft_latent_mask,
+  _cfg_active_steps,
   _convert_anima_diffusion_state_dict,
   _convert_qwen3_state_dict,
   _ensure_cosmos_torchvision_shim,
@@ -505,6 +507,184 @@ class AnimaPreprocessingAndConversionTests(unittest.TestCase):
       tr.transformer_blocks[0].attn1.to_q.weight.dtype, torch.float8_e4m3fn
     )
 
+  def test_defaults_steps_20_prompt_cache_and_tail_cfg_skip(self):
+    from collections import OrderedDict
+    from types import SimpleNamespace
+
+    # Defaults & clamping
+    self.assertEqual(ANIMA_DEFAULT_STEPS, 20)
+    defaults = AnimaSettings().normalized()
+    self.assertEqual(defaults.steps, 20)
+    self.assertFalse(defaults.cache_prompt_embeds)
+    self.assertEqual(defaults.cfg_skip_tail, 0.0)
+    self.assertEqual(AnimaSettings(cfg_skip_tail=0.9).normalized().cfg_skip_tail, 0.3)
+    self.assertEqual(AnimaSettings(cfg_skip_tail=-0.2).normalized().cfg_skip_tail, 0.0)
+
+    # _cfg_active_steps math
+    self.assertEqual(_cfg_active_steps(20, 0.0), 20)
+    self.assertEqual(_cfg_active_steps(20, 0.2), 16)
+    self.assertEqual(_cfg_active_steps(20, 0.3), 14)
+    self.assertEqual(_cfg_active_steps(1, 0.3), 1)
+
+    # CLI flags & range validation
+    with patch.object(sys, "argv", [sys.argv[0]]):
+      args = config.get_args(cli=True)
+      self.assertEqual(args.anima_steps, 20)
+      self.assertFalse(args.anima_cache_prompt)
+      self.assertEqual(args.anima_cfg_skip_tail, 0.0)
+    with patch.object(
+      sys,
+      "argv",
+      [sys.argv[0], "--anima-cache-prompt", "--anima-cfg-skip-tail", "0.2"],
+    ):
+      args = config.get_args(cli=True)
+      self.assertTrue(args.anima_cache_prompt)
+      self.assertAlmostEqual(args.anima_cfg_skip_tail, 0.2)
+    with (
+      patch.object(sys, "argv", [sys.argv[0], "--anima-cfg-skip-tail", "0.5"]),
+      contextlib.redirect_stderr(io.StringIO()),
+      self.assertRaises(SystemExit) as ctx,
+    ):
+      config.get_args(cli=True)
+    self.assertEqual(ctx.exception.code, 2)
+
+    # Prompt embedding cache hit / miss / clear-on-disable
+    encode_calls = [0]
+
+    class FakeTextEncoder:
+      def to(self, *_args, **_kwargs):
+        return self
+
+      def __call__(self, input_ids, attention_mask=None, output_hidden_states=False):
+        encode_calls[0] += 1
+        return SimpleNamespace(
+          last_hidden_state=torch.ones(
+            (input_ids.shape[0], input_ids.shape[1], 4), dtype=torch.float32
+          )
+          * encode_calls[0]
+        )
+
+    class FakeConditioner:
+      def to(self, *_args, **_kwargs):
+        return self
+
+      def __call__(self, source_hidden_states, **_kwargs):
+        return source_hidden_states
+
+    class FakeTokenizer:
+      def __call__(self, texts, **_kwargs):
+        return SimpleNamespace(
+          input_ids=torch.ones((len(texts), 3), dtype=torch.long),
+          attention_mask=torch.ones((len(texts), 3), dtype=torch.long),
+        )
+
+    inst = AnimaInpainter.__new__(AnimaInpainter)
+    inst.device = torch.device("cpu")
+    inst.dtype = torch.float32
+    inst.settings = AnimaSettings(cache_prompt_embeds=False).normalized()
+    inst._prompt_cache = OrderedDict()
+    inst.tokenizer = FakeTokenizer()
+    inst.t5_tokenizer = FakeTokenizer()
+    inst.text_encoder = FakeTextEncoder()
+    inst.text_conditioner = FakeConditioner()
+    inst.lllite = None
+
+    with patch.object(torch.cuda, "empty_cache", lambda: None):
+      # Cache OFF -> encodes every call (pos + neg = 2 calls per _encode_prompts)
+      inst._encode_prompts("1girl", "censored", do_cfg=True)
+      inst._encode_prompts("1girl", "censored", do_cfg=True)
+      self.assertEqual(encode_calls[0], 4)
+      self.assertEqual(len(inst._prompt_cache), 0)
+
+      # Cache ON -> second call with identical prompts hits cache (no extra Qwen3 calls)
+      inst.update_settings(AnimaSettings(cache_prompt_embeds=True))
+      pos1, neg1 = inst._encode_prompts("1girl", "censored", do_cfg=True)
+      self.assertEqual(encode_calls[0], 6)
+      pos2, neg2 = inst._encode_prompts("1girl", "censored", do_cfg=True)
+      self.assertEqual(encode_calls[0], 6)
+      self.assertTrue(torch.equal(pos1, pos2))
+      self.assertTrue(torch.equal(neg1, neg2))
+
+      # Different prompt misses cache
+      inst._encode_prompts("1girl, @artist", "censored", do_cfg=True)
+      self.assertEqual(encode_calls[0], 8)
+
+      # Turning cache OFF clears stored entries
+      inst.update_settings(AnimaSettings(cache_prompt_embeds=False))
+      self.assertEqual(len(inst._prompt_cache), 0)
+
+  @unittest.skipUnless(
+    anima_dependencies_available(), "Optional anima dependencies not installed"
+  )
+  def test_tail_cfg_skip_reduces_transformer_calls_in_denoise_crop(self):
+    from diffusers import FlowMatchEulerDiscreteScheduler
+
+    transformer_calls = [0]
+
+    class CountingTransformer:
+      def to(self, *_args, **_kwargs):
+        return self
+
+      def __call__(self, hidden_states, **_kwargs):
+        transformer_calls[0] += 1
+        return (torch.zeros_like(hidden_states),)
+
+    class StubLLLite:
+      class _Mods:
+        def to(self, *_args, **_kwargs):
+          return self
+
+      lllite_modules = _Mods()
+
+      def set_multiplier(self, _m):
+        pass
+
+      def encode_conditioning(self, *_args, **_kwargs):
+        pass
+
+      def apply_to(self):
+        pass
+
+      def restore(self):
+        pass
+
+      def offload_modules_to_cpu(self):
+        pass
+
+    inst = AnimaInpainter.__new__(AnimaInpainter)
+    inst.device = torch.device("cpu")
+    inst.dtype = torch.float32
+    inst.use_block_offload = True
+    inst.settings = AnimaSettings(
+      steps=5, cfg_scale=4.0, cfg_skip_tail=0.2
+    ).normalized()
+    inst.transformer = CountingTransformer()
+    inst.lllite = StubLLLite()
+    inst.scheduler = FlowMatchEulerDiscreteScheduler(
+      num_train_timesteps=1000, shift=3.0, use_dynamic_shifting=False
+    )
+    inst._encode_image_latents = lambda _x: torch.zeros((1, 4, 1, 2, 2))
+    inst._decode_latents = lambda _z: np.zeros((16, 16, 3), dtype=np.float32)
+
+    rgb = np.full((16, 16, 3), 128, dtype=np.uint8)
+    mask = np.zeros((16, 16), dtype=bool)
+    mask[4:12, 4:12] = True
+    pos = torch.zeros((1, 4, 8))
+    neg = torch.zeros((1, 4, 8))
+
+    with patch.object(torch.cuda, "empty_cache", lambda: None):
+      # 5 steps with 20% tail skip -> 4 CFG steps (8 calls) + 1 CFG=1 step (1 call) = 9
+      inst._denoise_crop(rgb, mask, pos_embeds=pos, neg_embeds=neg, seed=42)
+      self.assertEqual(transformer_calls[0], 9)
+
+      # With 0% tail skip -> 5 CFG steps = 10 calls
+      transformer_calls[0] = 0
+      inst.settings = AnimaSettings(
+        steps=5, cfg_scale=4.0, cfg_skip_tail=0.0
+      ).normalized()
+      inst._denoise_crop(rgb, mask, pos_embeds=pos, neg_embeds=neg, seed=42)
+      self.assertEqual(transformer_calls[0], 10)
+
 
 class AnimaGuardsAndDecensorTests(unittest.TestCase):
   def _make_fake_anima_dir(self, root: Path):
@@ -750,19 +930,30 @@ class AnimaGuiTests(unittest.TestCase):
       )
 
       win.animaSettingsPanel.positivePromptEdit.setText("1girl, @artist")
-      win.animaSettingsPanel.stepsSpin.setValue(20)
+      win.animaSettingsPanel.stepsSpin.setValue(24)
       win.animaSettingsPanel.fp8Checkbox.setChecked(False)
+      win.animaSettingsPanel.cachePromptCheckbox.setChecked(True)
+      win.animaSettingsPanel.cfgSkipTailSpin.setValue(20)
       self.assertEqual(
         editor.animaSettingsPanel.positivePromptEdit.text(), "1girl, @artist"
       )
-      self.assertEqual(editor.animaSettingsPanel.stepsSpin.value(), 20)
+      self.assertEqual(editor.animaSettingsPanel.stepsSpin.value(), 24)
       self.assertFalse(editor.animaSettingsPanel.fp8Checkbox.isChecked())
+      self.assertTrue(editor.animaSettingsPanel.cachePromptCheckbox.isChecked())
+      self.assertEqual(editor.animaSettingsPanel.cfgSkipTailSpin.value(), 20)
+      self.assertAlmostEqual(
+        editor.get_decensor_settings()["anima_settings"]["cfg_skip_tail"], 0.2
+      )
 
-      # Edit negative prompt & FP8 toggle in Editor -> syncs back to MainWindow
+      # Edit negative prompt, FP8, cache & tail CFG in Editor -> syncs back to MainWindow
       editor.animaSettingsPanel.negativePromptEdit.setText("")
       editor.animaSettingsPanel.fp8Checkbox.setChecked(True)
+      editor.animaSettingsPanel.cachePromptCheckbox.setChecked(False)
+      editor.animaSettingsPanel.cfgSkipTailSpin.setValue(15)
       self.assertEqual(win.animaSettingsPanel.negativePromptEdit.text(), "")
       self.assertTrue(win.animaSettingsPanel.fp8Checkbox.isChecked())
+      self.assertFalse(win.animaSettingsPanel.cachePromptCheckbox.isChecked())
+      self.assertEqual(win.animaSettingsPanel.cfgSkipTailSpin.value(), 15)
 
       # Switch to Mosaic -> Anima disabled, falls back to PEPSI
       win.mosaicButton.setChecked(True)

@@ -70,6 +70,8 @@ class Decensor(QtCore.QThread):
       seed=args.anima_seed,
       max_size=args.anima_max_size,
       use_fp8_storage=args.anima_fp8,
+      cache_prompt_embeds=args.anima_cache_prompt,
+      cfg_skip_tail=args.anima_cfg_skip_tail,
       diffusion_file=args.anima_diffusion,
       controlnet_file=args.anima_controlnet,
     ).normalized()

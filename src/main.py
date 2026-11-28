@@ -204,7 +204,7 @@ class MainWindow(QWidget):
     # window size settings
     self.resize(900, 600)
     self.center()
-    self.setWindowTitle("DeepCreamPy v3.3.0-Unofficial")
+    self.setWindowTitle("DeepCreamPy v3.3.1-Unofficial")
     self.show()
 
   def load_model(self):

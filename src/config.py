@@ -3,12 +3,15 @@ import sys
 from pathlib import Path
 
 from anima import (
+  ANIMA_DEFAULT_CACHE_PROMPT,
   ANIMA_DEFAULT_CFG,
+  ANIMA_DEFAULT_CFG_SKIP_TAIL,
   ANIMA_DEFAULT_LLLITE_STRENGTH,
   ANIMA_DEFAULT_MAX_SIZE,
   ANIMA_DEFAULT_NEGATIVE_PROMPT,
   ANIMA_DEFAULT_SEED,
   ANIMA_DEFAULT_STEPS,
+  ANIMA_MAX_CFG_SKIP_TAIL,
   anima_cuda_available,
   anima_dependencies_available,
 )
@@ -150,6 +153,21 @@ def get_args(*, cli=False):
     ),
   )
   parser.add_argument(
+    "--anima-cache-prompt",
+    action=argparse.BooleanOptionalAction,
+    default=ANIMA_DEFAULT_CACHE_PROMPT,
+    help="cache encoded Anima prompt embeddings in CPU RAM across runs (default: disabled)",
+  )
+  parser.add_argument(
+    "--anima-cfg-skip-tail",
+    type=float,
+    default=ANIMA_DEFAULT_CFG_SKIP_TAIL,
+    help=(
+      "fraction of final denoising steps to run with CFG=1.0 "
+      f"(0.0..{ANIMA_MAX_CFG_SKIP_TAIL:.1f}, default: 0.0; e.g. 0.2 skips final 20%%)"
+    ),
+  )
+  parser.add_argument(
     "--anima-diffusion",
     default="",
     help="filename or path to Anima diffusion .safetensors checkpoint",
@@ -186,6 +204,10 @@ def get_args(*, cli=False):
       )
     if not anima_cuda_available():
       parser.error("--model anima requires a CUDA-capable NVIDIA GPU")
+  if not (0.0 <= args.anima_cfg_skip_tail <= ANIMA_MAX_CFG_SKIP_TAIL):
+    parser.error(
+      f"--anima-cfg-skip-tail must be between 0.0 and {ANIMA_MAX_CFG_SKIP_TAIL:.1f}"
+    )
   if args.bar_weights is not None and args.is_mosaic:
     parser.error("--bar-weights can only be used in bar mode")
   return args

@@ -11,6 +11,7 @@ import gc
 import importlib.util
 import random
 import sys
+from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -31,11 +32,15 @@ from libs.utils import (
 
 ANIMA_SUBDIRS = ("diffusion", "text_encoder", "vae", "controlnet")
 ANIMA_DEFAULT_NEGATIVE_PROMPT = "censored, bar censor, mosaic censoring"
-ANIMA_DEFAULT_STEPS = 28
+ANIMA_DEFAULT_STEPS = 20
 ANIMA_DEFAULT_CFG = 4.0
 ANIMA_DEFAULT_LLLITE_STRENGTH = 1.0
 ANIMA_DEFAULT_MAX_SIZE = 1024
 ANIMA_DEFAULT_SEED = -1
+ANIMA_DEFAULT_CACHE_PROMPT = False
+ANIMA_DEFAULT_CFG_SKIP_TAIL = 0.0
+ANIMA_MAX_CFG_SKIP_TAIL = 0.3
+ANIMA_PROMPT_CACHE_MAX_ENTRIES = 8
 # Threshold (GiB) below which block-level CPU offloading is automatically enabled.
 ANIMA_BLOCK_OFFLOAD_VRAM_GIB = 10.5
 # Threshold (GiB) when FP8 weight storage is enabled (~2.1 GiB DiT fits on 8 GiB GPUs).
@@ -64,6 +69,8 @@ class AnimaSettings:
   seed: int = ANIMA_DEFAULT_SEED
   max_size: int = ANIMA_DEFAULT_MAX_SIZE
   use_fp8_storage: bool | None = None
+  cache_prompt_embeds: bool = ANIMA_DEFAULT_CACHE_PROMPT
+  cfg_skip_tail: float = ANIMA_DEFAULT_CFG_SKIP_TAIL
   diffusion_file: str = ""
   controlnet_file: str = ""
 
@@ -79,6 +86,7 @@ class AnimaSettings:
       if self.use_fp8_storage is None
       else bool(self.use_fp8_storage)
     )
+    cfg_skip_tail = max(0.0, min(ANIMA_MAX_CFG_SKIP_TAIL, float(self.cfg_skip_tail)))
     return AnimaSettings(
       positive_prompt=str(self.positive_prompt or ""),
       negative_prompt=str(self.negative_prompt or ""),
@@ -88,6 +96,8 @@ class AnimaSettings:
       seed=seed,
       max_size=max_size,
       use_fp8_storage=use_fp8,
+      cache_prompt_embeds=bool(self.cache_prompt_embeds),
+      cfg_skip_tail=cfg_skip_tail,
       diffusion_file=str(self.diffusion_file or ""),
       controlnet_file=str(self.controlnet_file or ""),
     )
@@ -103,6 +113,8 @@ class AnimaSettings:
       "seed": s.seed,
       "max_size": s.max_size,
       "use_fp8_storage": bool(s.use_fp8_storage),
+      "cache_prompt_embeds": bool(s.cache_prompt_embeds),
+      "cfg_skip_tail": float(s.cfg_skip_tail),
       "diffusion_file": s.diffusion_file,
       "controlnet_file": s.controlnet_file,
     }
@@ -120,6 +132,8 @@ class AnimaSettings:
       seed=data.get("seed", ANIMA_DEFAULT_SEED),
       max_size=data.get("max_size", ANIMA_DEFAULT_MAX_SIZE),
       use_fp8_storage=data.get("use_fp8_storage", None),
+      cache_prompt_embeds=data.get("cache_prompt_embeds", ANIMA_DEFAULT_CACHE_PROMPT),
+      cfg_skip_tail=data.get("cfg_skip_tail", ANIMA_DEFAULT_CFG_SKIP_TAIL),
       diffusion_file=data.get("diffusion_file", ""),
       controlnet_file=data.get("controlnet_file", ""),
     ).normalized()
@@ -503,6 +517,15 @@ def _fill_masked_pixels_for_vae(rgb_uint8: np.ndarray, mask: np.ndarray) -> np.n
   return np.rint(filled.clip(0.0, 255.0)).astype(np.uint8)
 
 
+def _cfg_active_steps(total_steps: int, cfg_skip_tail: float) -> int:
+  """Return how many leading denoising steps keep CFG active before switching to CFG=1.0."""
+  if total_steps <= 1 or cfg_skip_tail <= 0.0:
+    return total_steps
+  ratio = max(0.0, min(ANIMA_MAX_CFG_SKIP_TAIL, float(cfg_skip_tail)))
+  skip_count = min(total_steps - 1, round(total_steps * ratio))
+  return total_steps - skip_count
+
+
 def _build_soft_latent_mask(
   mask01: torch.Tensor, latent_height: int, latent_width: int
 ) -> torch.Tensor:
@@ -571,6 +594,9 @@ class AnimaInpainter:
       else ANIMA_BLOCK_OFFLOAD_VRAM_GIB
     )
     self.use_block_offload = total_vram_gib <= offload_threshold
+    self._prompt_cache: OrderedDict[
+      tuple[str, str, bool], tuple[torch.Tensor, torch.Tensor | None]
+    ] = OrderedDict()
 
     _ensure_cosmos_torchvision_shim()
     self._load_components()
@@ -663,8 +689,12 @@ class AnimaInpainter:
     self.settings = settings.normalized()
     if hasattr(self, "lllite") and self.lllite is not None:
       self.lllite.set_multiplier(self.settings.lllite_strength)
+    if not self.settings.cache_prompt_embeds and hasattr(self, "_prompt_cache"):
+      self._prompt_cache.clear()
 
   def unload(self) -> None:
+    if hasattr(self, "_prompt_cache"):
+      self._prompt_cache.clear()
     if hasattr(self, "lllite") and self.lllite is not None:
       self.lllite.restore()
       self.lllite.offload_modules_to_cpu()
@@ -690,6 +720,18 @@ class AnimaInpainter:
     cancel_check: Callable[[], bool] | None = None,
   ) -> tuple[torch.Tensor, torch.Tensor | None]:
     self._check_cancel(cancel_check)
+    cache_key = (positive_prompt, negative_prompt if do_cfg else "", bool(do_cfg))
+    if self.settings.cache_prompt_embeds and cache_key in self._prompt_cache:
+      self._prompt_cache.move_to_end(cache_key)
+      cached_pos, cached_neg = self._prompt_cache[cache_key]
+      pos_gpu = cached_pos.to(device=self.device, dtype=self.dtype)
+      neg_gpu = (
+        cached_neg.to(device=self.device, dtype=self.dtype)
+        if cached_neg is not None
+        else None
+      )
+      return pos_gpu, neg_gpu
+
     max_seq = 512
 
     def _qwen_encode(text: str) -> tuple[torch.Tensor, torch.Tensor]:
@@ -759,6 +801,15 @@ class AnimaInpainter:
     finally:
       self.text_conditioner.to("cpu")
       torch.cuda.empty_cache()
+
+    if self.settings.cache_prompt_embeds:
+      self._prompt_cache[cache_key] = (
+        pos_embeds.detach().cpu(),
+        neg_embeds.detach().cpu() if neg_embeds is not None else None,
+      )
+      self._prompt_cache.move_to_end(cache_key)
+      while len(self._prompt_cache) > ANIMA_PROMPT_CACHE_MAX_ENTRIES:
+        self._prompt_cache.popitem(last=False)
 
     return pos_embeds, neg_embeds
 
@@ -877,10 +928,15 @@ class AnimaInpainter:
       self.lllite.lllite_modules.to(device=self.device, dtype=self.dtype)
     try:
       total = len(timesteps)
+      cfg_active_until = (
+        _cfg_active_steps(total, self.settings.cfg_skip_tail) if do_cfg else 0
+      )
       for idx, t in enumerate(timesteps):
         self._check_cancel(cancel_check)
+        use_cfg_step = do_cfg and (idx < cfg_active_until)
         if step_callback:
-          step_callback(idx, total, f"Denoising step {idx + 1}/{total}")
+          suffix = "" if (not do_cfg or use_cfg_step) else " [CFG=1]"
+          step_callback(idx, total, f"Denoising step {idx + 1}/{total}{suffix}")
 
         latent_input = latents.to(dtype=self.dtype)
         t_norm = (t.expand(1) / self.scheduler.config.num_train_timesteps).to(
@@ -896,7 +952,7 @@ class AnimaInpainter:
           return_dict=False,
         )[0].float()
 
-        if do_cfg:
+        if use_cfg_step:
           self._check_cancel(cancel_check)
           uncond_pred = self.transformer(
             hidden_states=latent_input,
