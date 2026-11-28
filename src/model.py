@@ -6,6 +6,24 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
+from anima import (
+  ANIMA_DEFAULT_CFG as ANIMA_DEFAULT_CFG,
+  ANIMA_DEFAULT_LLLITE_STRENGTH as ANIMA_DEFAULT_LLLITE_STRENGTH,
+  ANIMA_DEFAULT_MAX_SIZE as ANIMA_DEFAULT_MAX_SIZE,
+  ANIMA_DEFAULT_NEGATIVE_PROMPT as ANIMA_DEFAULT_NEGATIVE_PROMPT,
+  ANIMA_DEFAULT_SEED as ANIMA_DEFAULT_SEED,
+  ANIMA_DEFAULT_STEPS as ANIMA_DEFAULT_STEPS,
+  ANIMA_SUBDIRS as ANIMA_SUBDIRS,
+  AnimaCancelledError as AnimaCancelledError,
+  AnimaInpainter as AnimaInpainter,
+  AnimaSettings as AnimaSettings,
+  anima_availability as anima_availability,
+  anima_cuda_available as anima_cuda_available,
+  anima_dependencies_available as anima_dependencies_available,
+  anima_models_dir as anima_models_dir,
+  anima_radio_tooltip as anima_radio_tooltip,
+  list_anima_files as list_anima_files,
+)
 from lama import FFCResNetGenerator, infer_lama_config
 from libs.utils import (
   prepare_crop,
@@ -29,7 +47,7 @@ if not getattr(sys, "frozen", False):
 MODELS_DIR = ROOT / "models"
 WEIGHTS_NAME = "inpaint.pt"
 LAMA_WEIGHTS_PATH = _app_root() / "models" / "lama" / WEIGHTS_NAME
-MODEL_CHOICES = ("pepsi", "lama")
+MODEL_CHOICES = ("pepsi", "lama", "anima")
 
 
 def lama_weights_available(path=None):
@@ -401,7 +419,12 @@ class LamaInpainter:
 
 
 def create_inpainter(
-  model_name="pepsi", *, is_mosaic=False, weights_path=None, use_tta=True
+  model_name="pepsi",
+  *,
+  is_mosaic=False,
+  weights_path=None,
+  use_tta=True,
+  anima_settings=None,
 ):
   if model_name == "pepsi":
     return InpaintNN(is_mosaic=is_mosaic, weights_path=weights_path, use_tta=use_tta)
@@ -409,4 +432,8 @@ def create_inpainter(
     if is_mosaic:
       raise ValueError("LaMa is only supported in bar mode")
     return LamaInpainter(weights_path=weights_path)
+  if model_name == "anima":
+    if is_mosaic:
+      raise ValueError("Anima is only supported in bar mode")
+    return AnimaInpainter(settings=anima_settings)
   raise ValueError(f"Unsupported model: {model_name}")

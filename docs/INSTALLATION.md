@@ -8,6 +8,12 @@ This project targets Windows x64 with Python 3.13. Install [uv](https://docs.ast
 uv sync --locked
 ```
 
+To enable the optional GPU-only **Anima (+ ControlNet-LLLite)** model, include the `anima` dependency group:
+
+```powershell
+uv sync --locked --group anima
+```
+
 The lockfile uses the official PyTorch CUDA 13.2 build. With a compatible NVIDIA GPU and driver, the application uses CUDA automatically. The application reports its device and starts on the CPU if CUDA is unavailable or fails to initialize. An error during inference stops the current job.
 
 ## Prepare the models

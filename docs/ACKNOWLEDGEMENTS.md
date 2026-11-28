@@ -6,6 +6,8 @@ User interface code uses the Qt for Python library under the LGPLv3 license.
 I made no modifications to the Qt for Python source code.
 To meet LGPLv3 license obligations, I have provided a link to obtaining the [Qt for Python source code](https://code.qt.io/cgit/pyside/pyside-setup.git/). I also permit recombining or relinking DeepCreamPy with modified versions of the Qt for Python library by modifying DeepCreamPy's source code.
 
+Optional offline Anima support includes tokenizer definition files from [Qwen3-0.6B-Base](https://huggingface.co/Qwen/Qwen3-0.6B-Base) and [google-t5/t5-base](https://huggingface.co/google-t5/t5-base), both distributed under the Apache License 2.0, and implements ControlNet-LLLite inference compatible with [kohya-ss/sd-scripts](https://github.com/kohya-ss/sd-scripts) (Apache License 2.0). Anima model weights themselves are not distributed with DeepCreamPy.
+
 MIT License text for Min-Cheol Sagong:
 ```
 MIT License

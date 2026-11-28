@@ -2,6 +2,17 @@ import argparse
 import sys
 from pathlib import Path
 
+from anima import (
+  ANIMA_DEFAULT_CFG,
+  ANIMA_DEFAULT_LLLITE_STRENGTH,
+  ANIMA_DEFAULT_MAX_SIZE,
+  ANIMA_DEFAULT_NEGATIVE_PROMPT,
+  ANIMA_DEFAULT_SEED,
+  ANIMA_DEFAULT_STEPS,
+  anima_cuda_available,
+  anima_dependencies_available,
+)
+
 
 def str2floatarr(v):
   if type(v) == str:
@@ -66,9 +77,9 @@ def get_args(*, cli=False):
   )
   parser.add_argument(
     "--model",
-    choices=("pepsi", "lama"),
+    choices=("pepsi", "lama", "anima"),
     default="pepsi",
-    help="inpainting model architecture to use (pepsi or lama)",
+    help="inpainting model architecture to use (pepsi, lama, or anima)",
   )
   parser.add_argument(
     "--is_mosaic",
@@ -89,6 +100,56 @@ def get_args(*, cli=False):
     default=True,
     help="enable horizontal-flip and small-shift TTA for PEPSI (default: enabled)",
   )
+  parser.add_argument(
+    "--anima-prompt",
+    default="",
+    help="optional auxiliary positive prompt for Anima (e.g. body part or @artist)",
+  )
+  parser.add_argument(
+    "--anima-negative-prompt",
+    default=ANIMA_DEFAULT_NEGATIVE_PROMPT,
+    help="negative prompt for Anima (pass empty string to leave blank)",
+  )
+  parser.add_argument(
+    "--anima-steps",
+    type=int,
+    default=ANIMA_DEFAULT_STEPS,
+    help="number of denoising steps for Anima",
+  )
+  parser.add_argument(
+    "--anima-cfg",
+    type=float,
+    default=ANIMA_DEFAULT_CFG,
+    help="CFG guidance scale for Anima",
+  )
+  parser.add_argument(
+    "--anima-strength",
+    type=float,
+    default=ANIMA_DEFAULT_LLLITE_STRENGTH,
+    help="ControlNet-LLLite strength multiplier for Anima",
+  )
+  parser.add_argument(
+    "--anima-seed",
+    type=int,
+    default=ANIMA_DEFAULT_SEED,
+    help="base RNG seed for Anima (-1 for random)",
+  )
+  parser.add_argument(
+    "--anima-max-size",
+    type=int,
+    default=ANIMA_DEFAULT_MAX_SIZE,
+    help="maximum crop/image side length for Anima (512..1536, multiple of 16)",
+  )
+  parser.add_argument(
+    "--anima-diffusion",
+    default="",
+    help="filename or path to Anima diffusion .safetensors checkpoint",
+  )
+  parser.add_argument(
+    "--anima-controlnet",
+    default="",
+    help="filename or path to Anima 4ch Inpaint ControlNet-LLLite .safetensors checkpoint",
+  )
   parser.set_defaults(bar_weights=None)
   if cli:
     parser.add_argument(
@@ -107,6 +168,15 @@ def get_args(*, cli=False):
   args = parser.parse_args()
   if args.model == "lama" and args.is_mosaic:
     parser.error("--model lama can only be used in bar mode")
+  if args.model == "anima" and args.is_mosaic:
+    parser.error("--model anima can only be used in bar mode")
+  if cli and args.model == "anima":
+    if not anima_dependencies_available():
+      parser.error(
+        "--model anima requires optional dependencies (`uv sync --locked --group anima`)"
+      )
+    if not anima_cuda_available():
+      parser.error("--model anima requires a CUDA-capable NVIDIA GPU")
   if args.bar_weights is not None and args.is_mosaic:
     parser.error("--bar-weights can only be used in bar mode")
   return args

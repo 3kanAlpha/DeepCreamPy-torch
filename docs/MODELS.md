@@ -52,3 +52,18 @@ uv run --locked python src/convert_lama.py path/to/big-lama.pt
 ```
 
 For `.safetensors`, pass `--with safetensors`. Select LaMa from the CLI with `--model lama` or in the GUI under the **Model** group (disabled when mosaic mode is selected).
+
+## Anima model + 4-channel Inpaint ControlNet-LLLite (bar mode, GPU only)
+
+When running on a CUDA-capable NVIDIA GPU with the optional `anima` dependency group installed, you can select **Anima (`Anima-Base` + 4ch Inpaint ControlNet-LLLite)** in bar mode. [Anima engine](../src/anima.py) · [ControlNet-LLLite adapter](../src/anima_lllite.py)
+
+* **Dependencies**: Install optional packages with `uv sync --locked --group anima` (not required for PEPSI/LaMa).
+* **Offline weights layout**: Place standalone ComfyUI-compatible `.safetensors` files under `models/anima/` (model weights are **not** bundled due to Anima's non-commercial license):
+  * `models/anima/diffusion/` — `Anima-Base` diffusion checkpoint (e.g. `anima-base-v1.0.safetensors`)
+  * `models/anima/text_encoder/` — Qwen3-0.6B base text encoder (e.g. `qwen_3_06b_base.safetensors`)
+  * `models/anima/vae/` — Qwen-Image VAE (e.g. `qwen_image_vae.safetensors`)
+  * `models/anima/controlnet/` — 4-channel inpaint ControlNet-LLLite weights (e.g. `anima-lllite-inpainting-v2.safetensors`)
+* **Offline tokenizers**: Lightweight Qwen3 and T5 tokenizer definitions are bundled under `assets/anima_tokenizers/` so inference runs completely offline with no network access.
+* **VRAM management (8 GB target)**: Runs in `bfloat16` (or `float16` on older GPUs) with sequential component offloading (Qwen3 -> `llm_adapter` -> DiT+LLLite -> VAE), sequential CFG (`batch_size=1`), VAE tiling/slicing, and automatic block-level CPU offloading when total GPU VRAM is 10.5 GiB or less.
+* **Inpainting & crop grouping**: Nearby masked regions are iteratively merged into broader context crops (or a single whole-image pass for medium images) aligned to multiples of 16. Denoising starts from pure noise (`denoise=1.0`) guided by 4-channel LLLite conditioning plus step-wise known-region latent preservation, then pastes only masked pixels back with boundary and monochrome correction. Variations use distinct RNG seeds rather than image flipping.
+* **Prompts & tuning**: Leave the positive prompt blank to preserve the original art style, or add optional hints (e.g. body part or `@artist`). The negative prompt defaults to `censored, bar censor, mosaic censoring` and can be freely edited or cleared. Select via GUI (**Model -> Anima**) or CLI (`--model anima --anima-prompt "..." --anima-steps 28 --anima-cfg 4.0`).

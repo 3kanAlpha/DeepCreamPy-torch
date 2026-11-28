@@ -342,6 +342,186 @@ def resize_lama_prediction(prediction, size):
   return np.rint(rgb.clip(0, 255)).astype(np.uint8)
 
 
+def group_anima_regions(
+  image_size,
+  regions,
+  *,
+  max_size=1024,
+  min_crop_size=512,
+  expand_factor=2.5,
+  merge_margin=64,
+  whole_image_coverage=0.55,
+):
+  """Group nearby censored regions into merged context crops or a whole-image pass.
+
+  Returns a list of ``(box, merged_region_pixels)`` pairs where each ``box`` is
+  ``(left, top, right, bottom)`` within ``image_size``.
+  """
+  if not regions:
+    return []
+
+  img_w, img_h = image_size
+  all_pixels = set().union(*regions)
+  whole_box = (0, 0, img_w, img_h)
+
+  # Small/medium images fit cleanly in a single full-image pass with full style context.
+  if (img_w * img_h <= max_size * max_size) and (
+    max(img_w, img_h) <= int(max_size * 1.25)
+  ):
+    return [(whole_box, all_pixels)]
+
+  def _expand_rect(left, top, right, bottom):
+    span = max(right - left, bottom - top)
+    target = max(span, min_crop_size, int(round(span * expand_factor)))
+    crop_w = min(max(right - left, target), img_w)
+    crop_h = min(max(bottom - top, target), img_h)
+    x0 = min(max((left + right - crop_w) // 2, 0), img_w - crop_w)
+    y0 = min(max((top + bottom - crop_h) // 2, 0), img_h - crop_h)
+    return (x0, y0, x0 + crop_w, y0 + crop_h)
+
+  clusters = []
+  for region in regions:
+    xs, ys = zip(*region)
+    box = _expand_rect(min(xs), min(ys), max(xs) + 1, max(ys) + 1)
+    clusters.append([box, set(region)])
+
+  # Iteratively merge overlapping or nearby context boxes.
+  merged = True
+  while merged and len(clusters) > 1:
+    merged = False
+    next_clusters = []
+    used = [False] * len(clusters)
+    for i in range(len(clusters)):
+      if used[i]:
+        continue
+      used[i] = True
+      l1, t1, r1, b1 = clusters[i][0]
+      pix = set(clusters[i][1])
+      changed = True
+      while changed:
+        changed = False
+        for j in range(i + 1, len(clusters)):
+          if used[j]:
+            continue
+          l2, t2, r2, b2 = clusters[j][0]
+          if (
+            l1 - merge_margin <= r2
+            and l2 - merge_margin <= r1
+            and t1 - merge_margin <= b2
+            and t2 - merge_margin <= b1
+          ):
+            used[j] = True
+            l1, t1 = min(l1, l2), min(t1, t2)
+            r1, b1 = max(r1, r2), max(b1, b2)
+            pix |= clusters[j][1]
+            changed = True
+            merged = True
+      next_clusters.append([(l1, t1, r1, b1), pix])
+    clusters = next_clusters
+
+  # If the combined area already covers most of the image, run one full-image pass.
+  if len(clusters) == 1:
+    l0, t0, r0, b0 = clusters[0][0]
+    area_ratio = ((r0 - l0) * (b0 - t0)) / max(1, img_w * img_h)
+    if area_ratio >= whole_image_coverage:
+      return [(whole_box, all_pixels)]
+  else:
+    ul = min(c[0][0] for c in clusters)
+    ut = min(c[0][1] for c in clusters)
+    ur = max(c[0][2] for c in clusters)
+    ub = max(c[0][3] for c in clusters)
+    union_ratio = ((ur - ul) * (ub - ut)) / max(1, img_w * img_h)
+    if union_ratio >= whole_image_coverage and max(img_w, img_h) <= int(max_size * 1.5):
+      return [(whole_box, all_pixels)]
+
+  return [(box, pix) for box, pix in clusters]
+
+
+def prepare_anima_crop(image, marked, box, *, min_size=512, max_size=1024, multiple=16):
+  """Prepare a ``uint8`` RGB crop and boolean mask aligned to ``multiple`` for Anima.
+
+  Preserves aspect ratio, keeps long side within ``[min_size, max_size]`` (subject to
+  ``min_size <= max_size``), avoids mask-color bleed during resampling, and reflection-pads
+  both RGB and mask to multiples of ``multiple``.
+  """
+  left, top, right, bottom = box
+  width, height = right - left, bottom - top
+  crop_mask = marked[top:bottom, left:right]
+  cropped = image.crop(box)
+
+  long_side = max(width, height)
+  effective_min = min(min_size, max_size)
+  if long_side > max_size:
+    scale = max_size / long_side
+  elif long_side < effective_min:
+    scale = effective_min / long_side
+  else:
+    scale = 1.0
+
+  resized = (
+    max(1, round(width * scale)),
+    max(1, round(height * scale)),
+  )
+
+  if resized == (width, height):
+    rgb = np.asarray(cropped, dtype=np.uint8).copy()
+    missing = crop_mask.copy()
+  elif scale < 1.0:
+    mask_f = Image.fromarray(crop_mask.astype(np.float32)).resize(
+      resized, Image.Resampling.BOX
+    )
+    missing = np.asarray(mask_f) > 0
+    rgb = np.asarray(
+      cropped.resize(resized, Image.Resampling.BOX), dtype=np.uint8
+    ).copy()
+  else:
+    mask_u = Image.fromarray(crop_mask).resize(resized, Image.Resampling.NEAREST)
+    missing = np.asarray(mask_u)
+    rgb_f = (
+      np.asarray(cropped.resize(resized, Image.Resampling.NEAREST), dtype=np.float32)
+      / 255.0
+    )
+    valid = (~crop_mask).astype(np.float32)
+    if valid.any():
+      src = np.asarray(cropped, dtype=np.float32) / 255.0
+      weight = np.asarray(
+        Image.fromarray(valid).resize(resized, Image.Resampling.BILINEAR)
+      )
+      channels = [
+        np.asarray(
+          Image.fromarray(src[..., c] * valid).resize(
+            resized, Image.Resampling.BILINEAR
+          )
+        )
+        for c in range(3)
+      ]
+      upscaled = np.stack(channels, axis=-1)
+      ok = (~missing) & (weight > 1e-6)
+      rgb_f[ok] = np.clip(upscaled[ok] / weight[ok, None], 0.0, 1.0)
+    rgb = np.rint(rgb_f.clip(0.0, 1.0) * 255.0).astype(np.uint8)
+
+  pad_x = (multiple - resized[0] % multiple) % multiple
+  pad_y = (multiple - resized[1] % multiple) % multiple
+  if pad_x or pad_y:
+    padding = ((0, pad_y), (0, pad_x))
+    mode = "reflect" if min(resized) > 1 else "edge"
+    rgb = np.pad(rgb, (*padding, (0, 0)), mode=mode)
+    missing = np.pad(missing, padding, mode=mode)
+
+  return rgb, missing, (slice(0, resized[1]), slice(0, resized[0]))
+
+
+def resize_anima_prediction(prediction_unit, size):
+  """Resize a ``[0, 1]`` float Anima prediction back to ``size`` as ``float32`` in ``[0, 255]``."""
+  if (prediction_unit.shape[1], prediction_unit.shape[0]) != size:
+    channels = [
+      np.asarray(Image.fromarray(channel).resize(size, Image.Resampling.BICUBIC))
+      for channel in prediction_unit.astype(np.float32).transpose(2, 0, 1)
+    ]
+    prediction_unit = np.stack(channels, axis=-1)
+  return (prediction_unit.astype(np.float32) * 255.0).clip(0.0, 255.0)
+
+
 def prepare_lama_training_crop(image, marked, box, size=512):
   """Prepare a fixed ``size x size`` ``[0, 1]`` RGB crop and missing mask for LaMa training."""
   left, top, right, bottom = box

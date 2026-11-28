@@ -38,13 +38,19 @@ from PySide6.QtWidgets import (
   QWidget,
 )
 
+from anima_ui import AnimaSettingsPanel
 from mask_detect import (
   DetectionParams,
   apply_mask_to_image,
   clamp_rect,
   detect_censor_in_rect,
 )
-from model import lama_radio_tooltip, lama_weights_available
+from model import (
+  anima_availability,
+  anima_radio_tooltip,
+  lama_radio_tooltip,
+  lama_weights_available,
+)
 
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 IMAGE_FILE_FILTER = (
@@ -704,6 +710,7 @@ class MaskEditorWindow(QWidget):
 
   settings_changed = Signal(dict)
   decensor_requested = Signal(object, object, str)  # ori_img, colored_img, output_stem
+  cancel_requested = Signal()
 
   def __init__(self, initial_settings: dict, mask_color=(0, 255, 0), parent=None):
     super().__init__(parent)
@@ -714,6 +721,8 @@ class MaskEditorWindow(QWidget):
     self._syncing_settings = False
     self._busy = False
     self._busy_reason = ""
+    self._can_cancel = False
+    self._cancelling = False
 
     self.original_image: Image.Image | None = None
     self.rgb_array: np.ndarray | None = None
@@ -954,13 +963,18 @@ class MaskEditorWindow(QWidget):
     model_row.addWidget(QLabel("Model:"))
     self.pepsiRadio = QRadioButton("PEPSI")
     self.lamaRadio = QRadioButton("LaMa")
+    self.animaRadio = QRadioButton("Anima")
     self.lamaRadio.setToolTip("LaMa is available in Bar censor mode only.")
     self.modelBtnGroup = QButtonGroup(self)
     self.modelBtnGroup.addButton(self.pepsiRadio)
     self.modelBtnGroup.addButton(self.lamaRadio)
+    self.modelBtnGroup.addButton(self.animaRadio)
     self.pepsiRadio.toggled.connect(self._on_decensor_settings_ui_changed)
+    self.lamaRadio.toggled.connect(self._on_decensor_settings_ui_changed)
+    self.animaRadio.toggled.connect(self._on_decensor_settings_ui_changed)
     model_row.addWidget(self.pepsiRadio)
     model_row.addWidget(self.lamaRadio)
+    model_row.addWidget(self.animaRadio)
     model_row.addStretch(1)
     settings_layout.addLayout(model_row)
 
@@ -980,16 +994,32 @@ class MaskEditorWindow(QWidget):
 
     sidebar.addWidget(settings_group)
 
+    self.animaSettingsPanel = AnimaSettingsPanel(compact=True)
+    self.animaSettingsPanel.setVisible(False)
+    self.animaSettingsPanel.settings_changed.connect(
+      self._on_decensor_settings_ui_changed
+    )
+    sidebar.addWidget(self.animaSettingsPanel)
+
     # 4. Action buttons
     actions_group = QGroupBox("Actions")
     actions_layout = QVBoxLayout(actions_group)
     actions_layout.setSpacing(6)
 
+    run_cancel_row = QHBoxLayout()
     self.decensorButton = QPushButton("Decensor")
     self.decensorButton.setMinimumHeight(38)
     self.decensorButton.setStyleSheet("font-weight: bold;")
     self.decensorButton.clicked.connect(self._on_decensor_clicked)
-    actions_layout.addWidget(self.decensorButton)
+    run_cancel_row.addWidget(self.decensorButton, 2)
+
+    self.cancelButton = QPushButton("Cancel")
+    self.cancelButton.setMinimumHeight(38)
+    self.cancelButton.setEnabled(False)
+    self.cancelButton.setToolTip("Cancel the currently running decensoring job.")
+    self.cancelButton.clicked.connect(self._on_cancel_clicked)
+    run_cancel_row.addWidget(self.cancelButton, 1)
+    actions_layout.addLayout(run_cancel_row)
 
     self.progressBar = QProgressBar()
     self.progressBar.setRange(0, 100)
@@ -1091,18 +1121,37 @@ class MaskEditorWindow(QWidget):
       self.pepsiRadio.setChecked(True)
     return available
 
+  def _refresh_anima_availability(self, is_mosaic: bool | None = None) -> bool:
+    if is_mosaic is None:
+      is_mosaic = self.mosaicRadio.isChecked()
+    available, reason = anima_availability()
+    self.animaRadio.setEnabled(available and not is_mosaic)
+    self.animaRadio.setToolTip(anima_radio_tooltip(available, reason))
+    if (is_mosaic or not available) and self.animaRadio.isChecked():
+      self.pepsiRadio.setChecked(True)
+    return available
+
+  def _update_model_specific_controls(self):
+    is_pepsi = self.pepsiRadio.isChecked()
+    is_anima = self.animaRadio.isChecked() and self.animaRadio.isEnabled()
+    self.ttaCheckbox.setEnabled(is_pepsi)
+    self.animaSettingsPanel.setVisible(is_anima)
+    self.animaSettingsPanel.setEnabled(is_anima)
+
   def get_decensor_settings(self) -> dict:
     is_mosaic = self.mosaicRadio.isChecked()
-    model_name = (
-      "lama"
-      if (self.lamaRadio.isEnabled() and self.lamaRadio.isChecked() and not is_mosaic)
-      else "pepsi"
-    )
+    if not is_mosaic and self.animaRadio.isEnabled() and self.animaRadio.isChecked():
+      model_name = "anima"
+    elif not is_mosaic and self.lamaRadio.isEnabled() and self.lamaRadio.isChecked():
+      model_name = "lama"
+    else:
+      model_name = "pepsi"
     return {
       "is_mosaic": is_mosaic,
       "model_name": model_name,
       "use_tta": self.ttaCheckbox.isChecked(),
       "variations": int(self.variationsCombo.currentText()),
+      "anima_settings": self.animaSettingsPanel.get_settings(),
     }
 
   def apply_synced_settings(self, settings: dict, *, auto_switch_tool: bool = True):
@@ -1113,16 +1162,23 @@ class MaskEditorWindow(QWidget):
       model_name = settings.get("model_name", "pepsi")
       use_tta = bool(settings.get("use_tta", True))
       variations = int(settings.get("variations", 1))
+      anima_data = settings.get("anima_settings")
 
       self.mosaicRadio.setChecked(is_mosaic)
       self.barRadio.setChecked(not is_mosaic)
-      available = self._refresh_lama_availability(is_mosaic=is_mosaic)
-      if (is_mosaic or not available) and model_name == "lama":
+      lama_ok = self._refresh_lama_availability(is_mosaic=is_mosaic)
+      anima_ok = self._refresh_anima_availability(is_mosaic=is_mosaic)
+      if (is_mosaic or not lama_ok) and model_name == "lama":
         model_name = "pepsi"
+      if (is_mosaic or not anima_ok) and model_name == "anima":
+        model_name = "pepsi"
+      self.pepsiRadio.setChecked(model_name == "pepsi")
       self.lamaRadio.setChecked(model_name == "lama")
-      self.pepsiRadio.setChecked(model_name != "lama")
+      self.animaRadio.setChecked(model_name == "anima")
       self.ttaCheckbox.setChecked(use_tta)
-      self.ttaCheckbox.setEnabled(model_name != "lama")
+      if anima_data is not None:
+        self.animaSettingsPanel.set_settings(anima_data)
+      self._update_model_specific_controls()
       idx = self.variationsCombo.findText(str(variations))
       if idx >= 0:
         self.variationsCombo.setCurrentIndex(idx)
@@ -1146,7 +1202,8 @@ class MaskEditorWindow(QWidget):
     self._syncing_settings = True
     try:
       self._refresh_lama_availability(is_mosaic=is_mosaic)
-      self.ttaCheckbox.setEnabled(self.pepsiRadio.isChecked())
+      self._refresh_anima_availability(is_mosaic=is_mosaic)
+      self._update_model_specific_controls()
     finally:
       self._syncing_settings = False
 
@@ -1320,18 +1377,35 @@ class MaskEditorWindow(QWidget):
 
   # --- Decensor execution & Progress ---
 
-  def set_busy(self, busy: bool, reason: str = ""):
+  def set_busy(self, busy: bool, reason: str = "", *, can_cancel: bool = False):
     self._busy = busy
     self._busy_reason = reason
+    self._can_cancel = bool(busy and can_cancel)
+    if not busy:
+      self._cancelling = False
     if busy and reason:
       self.statusLabel.setText(reason)
     self._update_ui_state()
+
+  def set_cancelling(self):
+    self._cancelling = True
+    self.statusLabel.setText("Cancelling...")
+    self._update_ui_state()
+
+  def set_status_text(self, text: str):
+    if text:
+      self.statusLabel.setText(text)
 
   def set_progress_range(self, minimum: int, maximum: int):
     self.progressBar.setRange(minimum, maximum)
 
   def set_progress_value(self, value: int):
     self.progressBar.setValue(value)
+
+  def _on_cancel_clicked(self):
+    if self._busy and self._can_cancel and not self._cancelling:
+      self.set_cancelling()
+      self.cancel_requested.emit()
 
   def _build_colored_image(self) -> Image.Image:
     assert self.original_image is not None
@@ -1379,6 +1453,11 @@ class MaskEditorWindow(QWidget):
   def on_decensor_failed(self, error_message: str):
     self.statusLabel.setText(f"Decensor failed: {error_message}")
     QMessageBox.warning(self, "Decensor Failed", error_message)
+    self._update_ui_state()
+
+  def on_decensor_cancelled(self):
+    self._cancelling = False
+    self.statusLabel.setText("Decensoring cancelled.")
     self._update_ui_state()
 
   # --- Manual Save actions ---
@@ -1454,6 +1533,11 @@ class MaskEditorWindow(QWidget):
       self.decensorButton.setText(self._busy_reason or "Processing...")
     else:
       self.decensorButton.setText("Decensor")
+
+    self.cancelButton.setEnabled(
+      self._busy and self._can_cancel and not self._cancelling
+    )
+    self.cancelButton.setText("Cancelling..." if self._cancelling else "Cancel")
 
     self.saveResultButton.setEnabled(has_results)
     self.saveMaskButton.setEnabled(has_img)

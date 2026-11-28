@@ -4,7 +4,7 @@
 
 ## (Windowsユーザー向け) ビルド済みexeファイルを使用する
 
-[最新リリース](https://github.com/3kanAlpha/DeepCreamPy-torch/releases/latest)から `DeepCreamPy-3.0.x-Windows-x64.7z` をダウンロードし、7zを展開した後 `DeepCreamPy.exe` を起動してください。Pythonやuvのインストールは不要です。
+[最新リリース](https://github.com/3kanAlpha/DeepCreamPy-torch/releases/latest)から `DeepCreamPy-3.0.x-Windows-x64.7z`（Anima対応版を利用する場合は `DeepCreamPy-Anima-Windows-x64.7z`）をダウンロードし、7zを展開した後 `DeepCreamPy.exe` を起動してください。Pythonやuvのインストールは不要です。
 
 Windows以外を利用している方や、ソースから直接実行したい方は以下の手順を参照してください。
 
@@ -22,6 +22,12 @@ uv sync --locked
 
 CUDA 13.2対応のPyTorchを含む必要なパッケージがインストールされます。
 
+Anima（+ ControlNet-LLLite）を使用する場合は、オプション依存グループ `anima` を含めて同期してください（CUDA対応NVIDIA GPU専用）。
+
+```sh
+uv sync --locked --group anima
+```
+
 ## 画像の復元に必要なモデルの準備
 
 以前のバージョンのDeepCreamPy用のモデルを持っていない場合、以下からダウンロードしてください。
@@ -38,12 +44,35 @@ uv run --locked --with tensorflow==2.21.0 python src/convert_models.py
 
 このコマンドで`models/bar/inpaint.pt`と`models/mosaic/inpaint.pt`が生成されます。変換元のモデルファイルも保持されます。（オリジナルが必要ない場合は削除しても問題ありません）
 
+### Anima (+ ControlNet-LLLite) を使用する場合（Bar モード・GPU 専用）
+
+CUDA対応のNVIDIA GPU（VRAM 8GB 以上の環境ではブロック単位オフロードを自動有効化）を使用している場合、Barモードの復元モデルとして **Anima (`Anima-Base` + 4chインペイント用 ControlNet-LLLite)** を選択できます。
+
+Animaのモデルウェイトは非商用ライセンスのため配布物には同梱されていません。[circlestone-labs/Anima](https://huggingface.co/circlestone-labs/Anima) および [kohya-ss/Anima-LLLite](https://huggingface.co/kohya-ss/Anima-LLLite) 等からComfyUI互換の単体 `.safetensors` ファイルを入手し、以下の4フォルダへ配置してください（ファイル名のリネームは不要です）。
+
+| フォルダ | 配置するファイル例 |
+| --- | --- |
+| `models/anima/diffusion/` | `anima-base-v1.0.safetensors`（Anima-Base本体） |
+| `models/anima/text_encoder/` | `qwen_3_06b_base.safetensors`（Qwen3-0.6B） |
+| `models/anima/vae/` | `qwen_image_vae.safetensors`（Qwen-Image VAE） |
+| `models/anima/controlnet/` | `anima-lllite-inpainting-v2.safetensors`（4chインペイント用 ControlNet-LLLite） |
+
+* 推論に必要なトークナイザ定義は `assets/anima_tokenizers/` に同梱されているため、ウェイト配置後は完全オフラインで動作します。
+* `diffusion/` や `controlnet/` に複数の `.safetensors` を配置した場合は、GUIの「Anima Settings → Advanced Settings」内のドロップダウンから切り替えられます。
+* 補助プロンプト・VRAM対策・詳細パラメータについては [モデル解説（日本語）](docs/MODELS.ja.md#anima-モデル--4ch-インペイント-controlnet-llliteバーモードgpu-専用) を参照してください。
+
 ## ツールの起動
 
 以下のコマンドでGUIが起動します。
 
 ```sh
 uv run --locked python src/main.py
+```
+
+Animaを使用する場合は `--group anima` を付けて起動してください。
+
+```sh
+uv run --locked --group anima python src/main.py
 ```
 
 ### GUI上でマスク編集から復元まで行う（Mask & Decensor）

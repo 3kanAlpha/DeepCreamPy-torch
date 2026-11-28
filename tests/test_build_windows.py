@@ -18,7 +18,13 @@ import model
 
 
 class BuildWindowsTests(unittest.TestCase):
-  def _prepare_fake_repo(self, root: Path, *, include_lama_model: bool = True):
+  def _prepare_fake_repo(
+    self,
+    root: Path,
+    *,
+    include_lama_model: bool = True,
+    include_anima_assets: bool = False,
+  ):
     (root / "LICENSE.md").write_text("license", encoding="utf-8")
     docs = root / "docs"
     docs.mkdir()
@@ -32,6 +38,15 @@ class BuildWindowsTests(unittest.TestCase):
       lama_dir = root / "models" / "lama"
       lama_dir.mkdir(parents=True)
       (lama_dir / "inpaint.pt").write_bytes(b"lama-weights")
+    if include_anima_assets:
+      for tok in ("qwen3", "t5"):
+        tok_dir = root / "assets" / "anima_tokenizers" / tok
+        tok_dir.mkdir(parents=True)
+        (tok_dir / "tokenizer.json").write_text("{}", encoding="utf-8")
+      for sub in ("diffusion", "text_encoder", "vae", "controlnet"):
+        wdir = root / "models" / "anima" / sub
+        wdir.mkdir(parents=True)
+        (wdir / f"{sub}.safetensors").write_bytes(b"anima-weights")
 
   def test_build_creates_7z_level7_and_excludes_lama_weights(self):
     with tempfile.TemporaryDirectory() as tmp:
@@ -82,7 +97,60 @@ class BuildWindowsTests(unittest.TestCase):
       self.assertTrue(bundle_dir.is_dir())
       self.assertTrue((bundle_dir / "models" / "lama").is_dir())
       self.assertFalse((bundle_dir / "models" / "lama" / "inpaint.pt").exists())
+      self.assertFalse((bundle_dir / "models" / "anima").exists())
+      self.assertIn("--exclude-module", pyinstaller_cmds[0])
       self.assertTrue((repo / "dist" / build_windows.ARCHIVE).is_file())
+
+  def test_build_with_anima_bundles_tokenizers_and_excludes_anima_weights(self):
+    with tempfile.TemporaryDirectory() as tmp:
+      repo = Path(tmp)
+      self._prepare_fake_repo(repo, include_lama_model=False, include_anima_assets=True)
+      pyinstaller_cmds = []
+      seven_zip_cmds = []
+
+      def fake_run(cmd, **kwargs):
+        if "-m" in cmd and "PyInstaller" in cmd:
+          pyinstaller_cmds.append(cmd)
+          stage = Path(cmd[cmd.index("--distpath") + 1])
+          bundle = stage / build_windows.NAME
+          bundle.mkdir(parents=True)
+          (bundle / f"{build_windows.NAME}.exe").write_bytes(b"exe")
+        else:
+          seven_zip_cmds.append((cmd, kwargs))
+          archive_path = Path(cmd[cmd.index("-mx=7") + 1])
+          archive_path.write_bytes(b"7z-archive")
+        return subprocess.CompletedProcess(cmd, 0)
+
+      with (
+        patch.object(build_windows, "ROOT", repo),
+        patch.object(build_windows, "distributions", return_value=[]),
+        patch.object(build_windows, "find_nanazip", return_value="NanaZipC"),
+        patch.object(build_windows.importlib.util, "find_spec", return_value=object()),
+        patch.object(build_windows.subprocess, "run", side_effect=fake_run),
+      ):
+        build_windows.main(["--with-anima"])
+
+      self.assertEqual(len(pyinstaller_cmds), 1)
+      add_data_args = [
+        pyinstaller_cmds[0][i + 1]
+        for i, arg in enumerate(pyinstaller_cmds[0])
+        if arg == "--add-data"
+      ]
+      self.assertEqual(len(add_data_args), 4)
+      self.assertTrue(
+        any(arg.endswith(":assets/anima_tokenizers/qwen3") for arg in add_data_args)
+      )
+      self.assertTrue(
+        any(arg.endswith(":assets/anima_tokenizers/t5") for arg in add_data_args)
+      )
+      self.assertFalse(any("safetensors" in arg.lower() for arg in add_data_args))
+      self.assertNotIn("--exclude-module", pyinstaller_cmds[0])
+
+      bundle_dir = repo / "dist" / build_windows.NAME
+      for sub in ("diffusion", "text_encoder", "vae", "controlnet"):
+        self.assertTrue((bundle_dir / "models" / "anima" / sub).is_dir())
+        self.assertEqual(list((bundle_dir / "models" / "anima" / sub).iterdir()), [])
+      self.assertTrue((repo / "dist" / build_windows.ANIMA_ARCHIVE).is_file())
 
   def test_build_warns_and_keeps_folder_when_nanazip_missing(self):
     with tempfile.TemporaryDirectory() as tmp:

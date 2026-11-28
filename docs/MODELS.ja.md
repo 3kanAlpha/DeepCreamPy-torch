@@ -52,3 +52,19 @@ uv run --locked python src/convert_lama.py path/to/big-lama.pt
 ```
 
 `.safetensors` を変換する場合は `--with safetensors` を付けて実行します。CLI での実行は `--model lama` を指定してください。GUI では「Model」グループから `LaMa (Bar only)` を選択できます（Mosaic モード選択時は無効化されます）。
+
+## Anima モデル + 4ch インペイント ControlNet-LLLite（バーモード・GPU 専用）
+
+CUDA 対応 NVIDIA GPU 環境でオプション依存グループ `anima` を導入している場合、バーモードで **Anima（`Anima-Base` + 4ch インペイント用 ControlNet-LLLite）** を選択できます。[Anima 推論エンジン](../src/anima.py) · [ControlNet-LLLite アダプタ](../src/anima_lllite.py)
+
+* **オプション依存の導入**: `uv sync --locked --group anima` で導入します（PEPSI / LaMa のみを使う場合は不要です）。
+* **ウェイトファイルの配置（完全オフライン）**: ComfyUI 配布と同じ単体 `.safetensors` ファイルを `models/anima/` 以下の 4 フォルダへ配置します（Anima の非商用ライセンスへの配慮のため、配布物には同梱されません）。
+  * `models/anima/diffusion/` — `Anima-Base` 本体（例: `anima-base-v1.0.safetensors`）
+  * `models/anima/text_encoder/` — Qwen3-0.6B テキストエンコーダ（例: `qwen_3_06b_base.safetensors`）
+  * `models/anima/vae/` — Qwen-Image VAE（例: `qwen_image_vae.safetensors`）
+  * `models/anima/controlnet/` — 4ch インペイント用 ControlNet-LLLite（例: `anima-lllite-inpainting-v2.safetensors`）
+  * `diffusion/` や `controlnet/` に複数ファイルを配置した場合は、詳細設定内のドロップダウンから切り替えられます。
+* **トークナイザ**: 軽量な Qwen3 / T5 トークナイザ定義を `assets/anima_tokenizers/` に同梱しているため、推論時にネット接続は不要です。
+* **8GB VRAM 対策**: `bfloat16`（非対応 GPU は `float16`）を基本とし、コンポーネント順次オフロード・CFG 逐次実行（batch=1）・VAE タイリング／スライシングに加え、VRAM 10.5 GiB 以下の環境ではブロック単位オフロードを自動で有効化します。
+* **インペイント・クロップ統合・Variations**: 近接するマスク領域を広めの余白付きクロップへ自動統合（中サイズ以下の画像や広範囲欠損は画像全体を一括推論）し、16 の倍数へアライメントします。純ノイズ開始（Denoise 1.0）＋ 4ch LLLite 条件付け ＋ ステップ毎の既知領域 Latent 維持で生成し、マスク内画素のみ貼り戻して境界・モノクロ補正を適用します。Variations は反転ではなくシード違いで生成します。
+* **補助プロンプトと実行方法**: 絵柄維持のため Positive は空欄デフォルト（必要に応じて部位や `@artist` 等を補助入力）、Negative は編集可能な初期値（`censored, bar censor, mosaic censoring`・消去可）となっています。GUI の **Model → Anima** または CLI（`--model anima`）から利用できます。
